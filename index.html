@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pulse</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Full-screen drawing surface -->
+  <canvas id="canvas"></canvas>
+
+  <!-- Continuous colour selector (native colour input gives a hue wheel in most browsers) -->
+  <input id="color-picker" type="color" aria-label="Pulse colour">
+
+  <!-- Buy Me a Coffee prompt (hidden by default) -->
+  <div id="coffee-card" aria-live="polite">
+    <button id="coffee-close" aria-label="Close support prompt">×</button>
+    <p>Enjoying Pulsii?</p>
+    <button id="coffee-button">Buy me a coffee</button>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>

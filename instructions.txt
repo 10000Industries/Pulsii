@@ -1,0 +1,58 @@
+You are creating a fully minimal, clean, mathematically precise version of an interactive app called **Pulse**.
+
+The app must have:
+- A **pure black background** (#000000)
+- A **continuous colour wheel selector** (simple hue slider is fine)
+- Tap/click anywhere to create a **pulse ripple** at that coordinate
+- The pulse is a **perfect expanding circle**, not stylized or “artistic”
+- The colour of the pulse is the chosen colour
+- Pulses fade smoothly over time (alpha fade)
+- Many pulses may overlap; colours should blend additively
+- The user sees pulses from every connected user in real time
+- Real-time syncing will be done via a simple WebSocket server
+
+The entire front-end must be:
+- Minimalist (no UI chrome, no buttons except colour selector)
+- One full-screen canvas
+- No borders, no shadows, no logos
+- 60fps or as close as the browser can achieve
+
+Folder structure to generate:
+
+/index.html
+  - imports style.css and script.js
+
+/style.css
+  - canvas fills screen
+  - colour picker in bottom-left corner
+  - minimal styling, no borders, no shadows
+
+/script.js
+  - draw a full-window HTML canvas
+  - track pulses {x, y, hue, radius, alpha}
+  - handle additive colour mixing on canvas
+  - use requestAnimationFrame for animation loop
+  - connect to a WebSocket server at ws://localhost:8080
+  - on receiving a pulse, add it to local pulses
+  - on user click/tap: create a pulse and send it to server
+
+/server.js
+  - Node WebSocket server using 'ws'
+  - broadcasts any received pulse to all connected clients
+
+Also include:
+
+package.json
+  - with dependencies: ws, express
+  - with scripts: "start" for the server, "serve" for the client
+
+After generating all files, ensure:
+- The app loads in a browser by opening index.html
+- The server runs with:  node server.js
+- The pulses appear, animate, fade, and sync correctly
+- All code is heavily commented for readability
+
+Finally:
+Explain any required setup steps to run the app locally.
+Do NOT include anything unnecessary.
+Keep everything minimal and clean.
