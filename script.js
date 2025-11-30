@@ -4,16 +4,16 @@
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 
-// Colour picker UI state (visual handle + hidden native input).
+// Colour picker UI state (DOM handle + hidden native input).
 const colorPicker = {
   input: document.getElementById('color-picker'),
+  handle: document.getElementById('color-handle'),
   radius: 20,
   margin: 24,
   x: null,
   y: null,
-  isDragging: false,
+  isDraggingPicker: false,
   pointerId: null,
-  isPointerCapture: false,
   dragStartX: 0,
   dragStartY: 0,
   pointerStartX: 0,
@@ -46,9 +46,9 @@ let deviceRatio = window.devicePixelRatio || 1;
 
 // Scale canvas to device pixels so circles stay sharp on HiDPI displays, while drawing in CSS units.
 function resizeCanvas() {
-  const rect = canvas.getBoundingClientRect();
-  cssWidth = rect.width;
-  cssHeight = rect.height;
+  const viewport = window.visualViewport;
+  cssWidth = viewport ? viewport.width : window.innerWidth;
+  cssHeight = viewport ? viewport.height : window.innerHeight;
   deviceRatio = window.devicePixelRatio || 1;
 
   canvas.width = Math.round(cssWidth * deviceRatio);
@@ -58,6 +58,8 @@ function resizeCanvas() {
 
   // Map drawing operations (in CSS pixels) to the backing store (device pixels).
   ctx.setTransform(deviceRatio, 0, 0, deviceRatio, 0, 0);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   // Keep the colour picker visible and within bounds after resizes.
   positionColorPicker();
@@ -85,6 +87,9 @@ function syncColorInputPosition() {
   colorPicker.input.style.top = `${y - colorPicker.radius}px`;
   colorPicker.input.style.width = `${size}px`;
   colorPicker.input.style.height = `${size}px`;
+  colorPicker.handle.style.left = `${x - colorPicker.radius}px`;
+  colorPicker.handle.style.top = `${y - colorPicker.radius}px`;
+  colorPicker.handle.style.background = colorPicker.input.value || '#ffffff';
 }
 
 // Convert #RRGGBB to an object so we can easily inject alpha later.
@@ -143,13 +148,6 @@ function stopBotPulse() {
   botTimer = null;
 }
 
-// Pointer utilities for the colour picker control.
-function isInsideColorPicker(localX, localY) {
-  const dx = localX - colorPicker.x;
-  const dy = localY - colorPicker.y;
-  return Math.hypot(dx, dy) <= colorPicker.radius;
-}
-
 function getPointerPosition(event) {
   const rect = canvas.getBoundingClientRect();
   const x = event.clientX - rect.left;
@@ -193,34 +191,35 @@ function openColorPicker() {
   }, 200);
 }
 
-function handlePointerDown(event) {
-  const { x, y, normX, normY } = getPointerPosition(event);
-
-  if (isInsideColorPicker(x, y)) {
-    colorPicker.isDragging = true;
-    colorPicker.pointerId = event.pointerId;
-    colorPicker.isPointerCapture = true;
-    colorPicker.dragStartX = colorPicker.x;
-    colorPicker.dragStartY = colorPicker.y;
-    colorPicker.pointerStartX = x;
-    colorPicker.pointerStartY = y;
-    try {
-      canvas.setPointerCapture(event.pointerId);
-    } catch (err) {
-      // Safe to ignore capture failures.
-    }
-    event.preventDefault();
-    return;
-  }
-
+function handleCanvasPointerDown(event) {
+  if (colorPicker.isDraggingPicker || event.target !== canvas) return;
+  const { normX, normY } = getPointerPosition(event);
   const colorHex = colorPicker.input.value;
   sendPulse(normX, normY, colorHex);
 }
 
-function handlePointerMove(event) {
-  if (!colorPicker.isDragging || event.pointerId !== colorPicker.pointerId) return;
+function handleCanvasTouchStart(event) {
+  if (colorPicker.isDraggingPicker) return;
+  if (event.touches.length === 0) return;
+  if (event.target !== canvas) return;
+  const touch = event.touches[0];
+  const { normX, normY } = getTouchPosition(touch);
+  const colorHex = colorPicker.input.value;
+  sendPulse(normX, normY, colorHex);
+}
 
-  const { x, y } = getPointerPosition(event);
+// Colour picker drag handlers (separate from canvas pulses).
+function startPickerDrag(x, y, id) {
+  colorPicker.isDraggingPicker = true;
+  colorPicker.pointerId = id;
+  colorPicker.dragStartX = colorPicker.x;
+  colorPicker.dragStartY = colorPicker.y;
+  colorPicker.pointerStartX = x;
+  colorPicker.pointerStartY = y;
+}
+
+function movePickerDrag(x, y) {
+  if (!colorPicker.isDraggingPicker) return;
   const deltaX = x - colorPicker.pointerStartX;
   const deltaY = y - colorPicker.pointerStartY;
   colorPicker.x = colorPicker.dragStartX + deltaX;
@@ -228,33 +227,53 @@ function handlePointerMove(event) {
   positionColorPicker();
 }
 
-function finishColorPickerDrag(event, shouldTriggerPicker) {
-  if (!colorPicker.isDragging || event.pointerId !== colorPicker.pointerId) return;
-
-  if (colorPicker.isPointerCapture) {
-    try {
-      canvas.releasePointerCapture(event.pointerId);
-    } catch (err) {
-      // Ignored; not all environments support release.
-    }
-  }
-
+function endPickerDrag(triggerPicker) {
+  if (!colorPicker.isDraggingPicker) return;
   const moved = Math.hypot(colorPicker.x - colorPicker.dragStartX, colorPicker.y - colorPicker.dragStartY);
-  colorPicker.isDragging = false;
+  colorPicker.isDraggingPicker = false;
   colorPicker.pointerId = null;
-  colorPicker.isPointerCapture = false;
-
-  if (shouldTriggerPicker && moved < 3) {
+  if (triggerPicker && moved < 3) {
     openColorPicker();
   }
 }
 
-function handlePointerUp(event) {
-  finishColorPickerDrag(event, true);
+function handlePickerPointerDown(event) {
+  const { x, y } = getPointerPosition(event);
+  startPickerDrag(x, y, event.pointerId);
+  try {
+    colorPicker.handle.setPointerCapture(event.pointerId);
+  } catch (err) {
+    // Ignore capture errors.
+  }
+  event.stopPropagation();
+  event.preventDefault();
 }
 
-function handlePointerCancel(event) {
-  finishColorPickerDrag(event, false);
+function handlePickerPointerMove(event) {
+  if (!colorPicker.isDraggingPicker || event.pointerId !== colorPicker.pointerId) return;
+  const { x, y } = getPointerPosition(event);
+  movePickerDrag(x, y);
+  event.stopPropagation();
+  event.preventDefault();
+}
+
+function handlePickerPointerUp(event) {
+  if (!colorPicker.isDraggingPicker || event.pointerId !== colorPicker.pointerId) return;
+  try {
+    colorPicker.handle.releasePointerCapture(event.pointerId);
+  } catch (err) {
+    // Ignore release errors.
+  }
+  endPickerDrag(true);
+  event.stopPropagation();
+  event.preventDefault();
+}
+
+function handlePickerPointerCancel(event) {
+  if (!colorPicker.isDraggingPicker || event.pointerId !== colorPicker.pointerId) return;
+  endPickerDrag(false);
+  event.stopPropagation();
+  event.preventDefault();
 }
 
 // Touch event handlers mirror pointer logic; prevent default to avoid scroll/zoom on canvas.
@@ -265,60 +284,39 @@ function findTouchById(touchList, id) {
   return null;
 }
 
-function handleTouchStart(event) {
+function handlePickerTouchStart(event) {
   if (event.touches.length === 0) return;
   const touch = event.touches[0];
-  const { x, y, normX, normY } = getTouchPosition(touch);
-
-  if (isInsideColorPicker(x, y)) {
-    colorPicker.isDragging = true;
-    colorPicker.pointerId = touch.identifier;
-    colorPicker.isPointerCapture = false;
-    colorPicker.dragStartX = colorPicker.x;
-    colorPicker.dragStartY = colorPicker.y;
-    colorPicker.pointerStartX = x;
-    colorPicker.pointerStartY = y;
-    event.preventDefault();
-    return;
-  }
-
-  const colorHex = colorPicker.input.value;
-  sendPulse(normX, normY, colorHex);
+  const { x, y } = getTouchPosition(touch);
+  startPickerDrag(x, y, touch.identifier);
+  event.stopPropagation();
   event.preventDefault();
 }
 
-function handleTouchMove(event) {
-  if (!colorPicker.isDragging) return;
+function handlePickerTouchMove(event) {
+  if (!colorPicker.isDraggingPicker) return;
   const touch = findTouchById(event.touches, colorPicker.pointerId);
   if (!touch) return;
-
   const { x, y } = getTouchPosition(touch);
-  const deltaX = x - colorPicker.pointerStartX;
-  const deltaY = y - colorPicker.pointerStartY;
-  colorPicker.x = colorPicker.dragStartX + deltaX;
-  colorPicker.y = colorPicker.dragStartY + deltaY;
-  positionColorPicker();
+  movePickerDrag(x, y);
+  event.stopPropagation();
   event.preventDefault();
 }
 
-function handleTouchEnd(event) {
-  if (!colorPicker.isDragging) return;
+function handlePickerTouchEnd(event) {
+  if (!colorPicker.isDraggingPicker) return;
   const touch = findTouchById(event.changedTouches, colorPicker.pointerId);
   if (!touch) return;
-
-  // Fabricate a minimal event-like object to reuse the drag finish logic.
-  const syntheticEvent = { pointerId: colorPicker.pointerId };
-  finishColorPickerDrag(syntheticEvent, true);
+  endPickerDrag(true);
+  event.stopPropagation();
   event.preventDefault();
 }
 
-function handleTouchCancel(event) {
-  if (!colorPicker.isDragging) return;
-  const touch = findTouchById(event.changedTouches, colorPicker.pointerId);
-  if (!touch) return;
-
-  const syntheticEvent = { pointerId: colorPicker.pointerId };
-  finishColorPickerDrag(syntheticEvent, false);
+function handlePickerTouchCancel(event) {
+  if (!colorPicker.isDraggingPicker) return;
+  endPickerDrag(false);
+  event.stopPropagation();
+  event.preventDefault();
 }
 
 // Attempt to open and maintain a WebSocket connection to sync pulses across users.
@@ -408,16 +406,6 @@ function animate(now) {
     ctx.restore();
   }
 
-  // Draw the colour picker handle on top using normal compositing.
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.fillStyle = colorPicker.input.value || '#ffffff';
-  ctx.strokeStyle = '#000';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.arc(colorPicker.x, colorPicker.y, colorPicker.radius, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.stroke();
-
   requestAnimationFrame(animate);
 }
 
@@ -425,17 +413,23 @@ function animate(now) {
 function init() {
   // Ensure the colour handle starts with a random, visible hue on black.
   colorPicker.input.value = randomColor();
+  colorPicker.input.addEventListener('input', syncColorInputPosition);
 
   resizeCanvas();
   window.addEventListener('resize', resizeCanvas);
-  canvas.addEventListener('pointerdown', handlePointerDown);
-  window.addEventListener('pointermove', handlePointerMove);
-  window.addEventListener('pointerup', handlePointerUp);
-  window.addEventListener('pointercancel', handlePointerCancel);
-  canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
-  window.addEventListener('touchmove', handleTouchMove, { passive: false });
-  window.addEventListener('touchend', handleTouchEnd, { passive: false });
-  window.addEventListener('touchcancel', handleTouchCancel, { passive: false });
+  canvas.addEventListener('pointerdown', handleCanvasPointerDown);
+  canvas.addEventListener('touchstart', handleCanvasTouchStart, { passive: false });
+  colorPicker.handle.addEventListener('pointerdown', handlePickerPointerDown);
+  colorPicker.handle.addEventListener('pointermove', handlePickerPointerMove);
+  colorPicker.handle.addEventListener('pointerup', handlePickerPointerUp);
+  colorPicker.handle.addEventListener('pointercancel', handlePickerPointerCancel);
+  colorPicker.handle.addEventListener('touchstart', handlePickerTouchStart, { passive: false });
+  colorPicker.handle.addEventListener('touchmove', handlePickerTouchMove, { passive: false });
+  colorPicker.handle.addEventListener('touchend', handlePickerTouchEnd, { passive: false });
+  colorPicker.handle.addEventListener('touchcancel', handlePickerTouchCancel, { passive: false });
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', resizeCanvas);
+  }
   connectWebSocket();
 
   // Toggle this flag above to true to enable the local test bot.
@@ -447,7 +441,7 @@ function init() {
   const coffeeCard = document.getElementById('coffee-card');
   const coffeeButton = document.getElementById('coffee-button');
   const coffeeClose = document.getElementById('coffee-close');
-  const COFFEE_URL = 'https://buymeacoffee.com/yourname';
+  const COFFEE_URL = 'https://buymeacoffee.com/10000industries';
   const COFFEE_DELAY_MS = 2 * 60 * 1000; // 2 minutes
 
   setTimeout(() => {
