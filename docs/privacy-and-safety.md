@@ -9,12 +9,17 @@ This document describes the restoration branch, not any unknown historical hosti
 - It broadcasts a current connection count.
 - It keeps active WebSocket connections and rate-limit state only in server memory.
 - It keeps visible rings only in browser memory until they fade.
+- It emits one-minute aggregate operational counters for connections, accepted
+  and dropped pulses, fanout, duration, memory, and capacity.
 
 ## What the application does not contain
 
-- No account, profile, name, email, chat, feed, database, cookie, local storage, or analytics code
-- No stored canvas, pulse history, replay, export, or user-level metrics
-- No third-party browser request during normal use
+- No account, profile, name, email, chat, feed, database, cookie, local storage,
+  ad network, or user-level analytics code
+- No stored canvas, pulse history, replay, export, coordinates, colours, user
+  agent, application-level IP logging, stable identifier, or user-level metrics
+- No third-party browser request during normal canvas use; the About dialog has
+  deliberate external links to support and source/feedback
 
 ## Important limits on the claim
 
@@ -31,21 +36,30 @@ It should not claim complete anonymity or that literally nothing is recorded wit
 - Strict pulse type, coordinate, and colour validation
 - Small WebSocket message limit
 - Per-connection pulse rate limit
+- Server-wide accepted-pulse and fanout limit with an honest congestion notice
 - Concurrent-connection cap and slow-client backpressure cutoff
 - Server heartbeat for dead connections
 - Peer-only relay so one local action renders exactly once
 - Client-side cap on active rings, with a lower non-additive reduced-motion cap
 - Exponential reconnect backoff
 - Honest connection count and sharing status
+- Always-available pause/resume control
+- Native invitation/share control with copy fallback
+- Coalesced presence broadcasts to bound connection-churn work
 - Reduced-motion rendering for people who request it
 - Explicit public-file allowlist
 - Security headers and a health endpoint
+- Preview-safe crawler policy by default; public indexing requires
+  `PUBLIC_MODE=true`
+- Aggregate operational logs without pulse content or user identifiers
 
 ## Before public launch
 
 - Review actual host logging and retention.
-- Load-test expected concurrency and pulse congestion.
+- Re-run guarded and relaxed-fanout tests against the release candidate.
 - Test flashing and motion risk with many simultaneous users.
-- Add a visible pause/exit control if reduced-motion handling is insufficient.
+- Complete the controlled iPad, reduced-motion, and pause-control review.
 - Decide whether a single global public canvas is acceptable or rooms/moderation are required.
 - Publish a short privacy notice based on the deployed infrastructure, not only this code.
+- Decide whether public indexing should be enabled; keep it off for the isolated
+  preview and controlled beta.

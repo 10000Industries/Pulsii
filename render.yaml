@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: pulsii-restoration-review
+    runtime: node
+    branch: agent/pulsii-restoration
+    plan: free
+    region: frankfurt
+    numInstances: 1
+    autoDeployTrigger: off
+    healthCheckPath: /healthz
+    buildCommand: npm ci && npm test && npm run check
+    startCommand: npm start
+    envVars:
+      - key: PUBLIC_MODE
+        value: "false"
+      - key: MAX_CONNECTIONS
+        value: "45"
+      - key: CLIENT_RATE_BURST
+        value: "10"
+      - key: CLIENT_RATE_PER_SECOND
+        value: "5"
+      - key: GLOBAL_RATE_BURST
+        value: "36"
+      - key: GLOBAL_RATE_PER_SECOND
+        value: "24"

@@ -7,6 +7,7 @@
   const REDUCED_MAX_ACTIVE_PULSES = 36;
   const RECONNECT_BASE_MS = 500;
   const RECONNECT_MAX_MS = 8000;
+  const TAP_MAX_TRAVEL_PX = 12;
   const HEX_COLOR = /^#[0-9a-f]{6}$/i;
   const PULSE_KEYS = new Set(['type', 'xNorm', 'yNorm', 'color']);
 
@@ -63,12 +64,40 @@
     return Math.min(RECONNECT_MAX_MS, Math.round(exponential * jitter));
   }
 
+  function connectionLabel(count) {
+    if (count === 1) return 'live · just you here';
+    if (Number.isInteger(count) && count > 1) {
+      return `live · ${count} connections`;
+    }
+    return 'live';
+  }
+
+  function canonicalShareUrl(locationHref) {
+    try {
+      const url = new URL(locationHref);
+      url.hash = '';
+      url.search = '';
+      return url.toString();
+    } catch (error) {
+      return locationHref;
+    }
+  }
+
+  function isTapGesture(startX, startY, endX, endY, hadMultiplePointers = false) {
+    if (hadMultiplePointers) return false;
+    if (![startX, startY, endX, endY].every(Number.isFinite)) return false;
+    return Math.hypot(endX - startX, endY - startY) <= TAP_MAX_TRAVEL_PX;
+  }
+
   const core = Object.freeze({
     HEX_COLOR,
     MAX_ACTIVE_PULSES,
     PULSE_LIFETIME_SECONDS,
     REDUCED_MAX_ACTIVE_PULSES,
+    canonicalShareUrl,
+    connectionLabel,
     hexToRgb,
+    isTapGesture,
     normalizePulse,
     pulseAgeSeconds,
     pulseOpacity,
@@ -83,14 +112,37 @@
 
   const document = root.document;
   const canvas = document.getElementById('canvas');
+  const stage = document.getElementById('stage');
   const context = canvas && canvas.getContext('2d');
   const intro = document.getElementById('intro');
   const status = document.getElementById('connection-status');
   const statusText = document.getElementById('status-text');
   const colorInput = document.getElementById('color-picker');
   const colorHandle = document.getElementById('color-handle');
+  const pauseButton = document.getElementById('pause-button');
+  const inviteButton = document.getElementById('invite-button');
+  const aboutButton = document.getElementById('about-button');
+  const aboutDialog = document.getElementById('about-dialog');
+  const aboutClose = document.getElementById('about-close');
+  const actionFeedback = document.getElementById('action-feedback');
 
-  if (!canvas || !context || !status || !statusText || !colorInput || !colorHandle) return;
+  if (
+    !canvas ||
+    !stage ||
+    !context ||
+    !status ||
+    !statusText ||
+    !colorInput ||
+    !colorHandle ||
+    !pauseButton ||
+    !inviteButton ||
+    !aboutButton ||
+    !aboutDialog ||
+    !aboutClose ||
+    !actionFeedback
+  ) {
+    return;
+  }
 
   const brightPalette = ['#00d4ff', '#ff4d8d', '#ffd166', '#7cff6b', '#b388ff', '#ff7a45'];
   const reducedMotion = root.matchMedia('(prefers-reduced-motion: reduce)');
@@ -106,6 +158,11 @@
   let connectionStopped = false;
   let resizeFrame = null;
   let animationFrame = null;
+  let visualsPaused = false;
+  let feedbackTimer = null;
+  let crowdedStatusTimer = null;
+  const canvasPointers = new Map();
+  let canvasGestureHadMultiplePointers = false;
 
   const picker = {
     radius: 24,
@@ -124,26 +181,49 @@
   function setStatus(state, text) {
     status.dataset.state = state;
     statusText.textContent = text;
+    inviteButton.disabled = state !== 'live' && state !== 'crowded';
   }
 
   function showLiveStatus() {
-    if (presenceCount === 1) {
-      setStatus('live', 'live · 1 connection');
-    } else if (presenceCount > 1) {
-      setStatus('live', `live · ${presenceCount} connections`);
-    } else {
-      setStatus('live', 'live');
+    if (crowdedStatusTimer !== null) {
+      root.clearTimeout(crowdedStatusTimer);
+      crowdedStatusTimer = null;
     }
+    setStatus('live', connectionLabel(presenceCount));
+    inviteButton.textContent = presenceCount === 1 ? 'invite' : 'share';
+  }
+
+  function safeAreaInset(name) {
+    const rawValue = root.getComputedStyle(stage)
+      .getPropertyValue(`--safe-${name}`)
+      .trim();
+    const value = Number.parseFloat(rawValue);
+    return Number.isFinite(value) ? value : 0;
   }
 
   function syncPickerPosition() {
+    const safeLeft = safeAreaInset('left');
+    const safeRight = safeAreaInset('right');
+    const safeTop = safeAreaInset('top');
+    const safeBottom = safeAreaInset('bottom');
+    const minimumX = safeLeft + picker.margin + picker.radius;
+    const maximumX = Math.max(
+      minimumX,
+      cssWidth - safeRight - picker.margin - picker.radius,
+    );
+    const minimumY = safeTop + picker.margin + picker.radius;
+    const maximumY = Math.max(
+      minimumY,
+      cssHeight - safeBottom - picker.margin - picker.radius,
+    );
+
     if (picker.x === null || picker.y === null) {
-      picker.x = picker.margin + picker.radius;
-      picker.y = cssHeight - picker.margin - picker.radius;
+      picker.x = minimumX;
+      picker.y = maximumY;
     }
 
-    picker.x = clamp(picker.x, picker.radius, Math.max(picker.radius, cssWidth - picker.radius));
-    picker.y = clamp(picker.y, picker.radius, Math.max(picker.radius, cssHeight - picker.radius));
+    picker.x = clamp(picker.x, minimumX, maximumX);
+    picker.y = clamp(picker.y, minimumY, maximumY);
 
     const color = colorInput.value.toLowerCase();
     colorHandle.style.left = `${picker.x - picker.radius}px`;
@@ -184,6 +264,7 @@
   function addPulse(pulse) {
     const normalized = normalizePulse(pulse);
     if (!normalized) return false;
+    if (visualsPaused) return true;
     const rgb = hexToRgb(normalized.color);
     if (!rgb) return false;
 
@@ -247,6 +328,69 @@
 
   function handleCanvasPointerDown(event) {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
+    if (event.pointerType === 'mouse') {
+      const { xNorm, yNorm } = pointerPosition(event);
+      sendPulse(xNorm, yNorm);
+      return;
+    }
+
+    canvasPointers.set(event.pointerId, {
+      startX: event.clientX,
+      startY: event.clientY,
+      lastX: event.clientX,
+      lastY: event.clientY,
+      maxTravel: 0,
+    });
+    if (canvasPointers.size > 1) {
+      canvasGestureHadMultiplePointers = true;
+    }
+  }
+
+  function handleCanvasPointerMove(event) {
+    const pointer = canvasPointers.get(event.pointerId);
+    if (!pointer) return;
+    pointer.lastX = event.clientX;
+    pointer.lastY = event.clientY;
+    pointer.maxTravel = Math.max(
+      pointer.maxTravel,
+      Math.hypot(
+        pointer.lastX - pointer.startX,
+        pointer.lastY - pointer.startY,
+      ),
+    );
+  }
+
+  function detectAdditionalTouch(event) {
+    if (
+      event.pointerType !== 'mouse' &&
+      canvasPointers.size > 0 &&
+      !canvasPointers.has(event.pointerId)
+    ) {
+      canvasGestureHadMultiplePointers = true;
+    }
+  }
+
+  function finishCanvasPointer(event, cancelled = false) {
+    const pointer = canvasPointers.get(event.pointerId);
+    if (!pointer) return;
+    canvasPointers.delete(event.pointerId);
+
+    const shouldSend =
+      !cancelled &&
+      isTapGesture(
+        pointer.startX,
+        pointer.startY,
+        event.clientX,
+        event.clientY,
+        canvasGestureHadMultiplePointers ||
+          pointer.maxTravel > TAP_MAX_TRAVEL_PX,
+      );
+
+    if (canvasPointers.size === 0) {
+      canvasGestureHadMultiplePointers = false;
+    }
+    if (!shouldSend) return;
+
     const { xNorm, yNorm } = pointerPosition(event);
     sendPulse(xNorm, yNorm);
   }
@@ -350,6 +494,18 @@
       return;
     }
 
+    if (message?.type === 'congestion') {
+      setStatus('crowded', 'live · crowded · some pulses not shared');
+      if (crowdedStatusTimer !== null) {
+        root.clearTimeout(crowdedStatusTimer);
+      }
+      crowdedStatusTimer = root.setTimeout(() => {
+        crowdedStatusTimer = null;
+        if (Number.isInteger(presenceCount)) showLiveStatus();
+      }, 2500);
+      return;
+    }
+
     addPulse(message);
   }
 
@@ -441,6 +597,7 @@
   }
 
   function startAnimation() {
+    if (visualsPaused) return;
     if (animationFrame !== null) return;
     animationFrame = root.requestAnimationFrame(animate);
   }
@@ -452,6 +609,7 @@
     context.globalAlpha = 1;
     context.fillStyle = '#000';
     context.fillRect(0, 0, cssWidth, cssHeight);
+    if (visualsPaused) return;
 
     const isReduced = reducedMotion.matches;
     const radialSpeed = Math.max(250, Math.hypot(cssWidth, cssHeight) * 0.34);
@@ -487,6 +645,100 @@
     if (pulses.length > 0) startAnimation();
   }
 
+  function showActionFeedback(message) {
+    actionFeedback.textContent = message;
+    actionFeedback.classList.add('visible');
+    if (feedbackTimer !== null) root.clearTimeout(feedbackTimer);
+    feedbackTimer = root.setTimeout(() => {
+      feedbackTimer = null;
+      actionFeedback.classList.remove('visible');
+    }, 2400);
+  }
+
+  function setVisualsPaused(paused) {
+    visualsPaused = Boolean(paused);
+    pauseButton.setAttribute('aria-pressed', String(visualsPaused));
+    pauseButton.textContent = visualsPaused ? 'resume' : 'pause';
+    pauseButton.setAttribute(
+      'aria-label',
+      visualsPaused ? 'Resume pulse visuals' : 'Pause pulse visuals',
+    );
+    if (visualsPaused) {
+      pulses.length = 0;
+      if (animationFrame !== null) {
+        root.cancelAnimationFrame(animationFrame);
+        animationFrame = null;
+      }
+      context.globalAlpha = 1;
+      context.globalCompositeOperation = 'source-over';
+      context.fillStyle = '#000';
+      context.fillRect(0, 0, cssWidth, cssHeight);
+      showActionFeedback('pulse visuals paused');
+    } else {
+      showActionFeedback('pulse visuals resumed');
+    }
+  }
+
+  function copyShareUrl(url) {
+    if (root.navigator.clipboard?.writeText) {
+      return root.navigator.clipboard.writeText(url);
+    }
+
+    return new Promise((resolve, reject) => {
+      const textArea = document.createElement('textarea');
+      textArea.value = url;
+      textArea.setAttribute('readonly', '');
+      textArea.style.position = 'fixed';
+      textArea.style.opacity = '0';
+      document.body.appendChild(textArea);
+      textArea.select();
+      textArea.setSelectionRange(0, textArea.value.length);
+      const copied = document.execCommand('copy');
+      textArea.remove();
+      if (copied) resolve();
+      else reject(new Error('Copy failed'));
+    });
+  }
+
+  async function shareCanvas() {
+    const url = canonicalShareUrl(root.location.href);
+    const shareData = {
+      title: 'Pulsii',
+      text: 'Open this public shared canvas with me for one minute.',
+      url,
+    };
+
+    if (typeof root.navigator.share === 'function') {
+      try {
+        await root.navigator.share(shareData);
+        showActionFeedback('invitation opened');
+        return;
+      } catch (error) {
+        if (error?.name === 'AbortError') return;
+      }
+    }
+
+    try {
+      await copyShareUrl(url);
+      showActionFeedback('link copied · send it while you stay here');
+    } catch (error) {
+      showActionFeedback('copy the page address to invite someone');
+    }
+  }
+
+  function openAboutDialog() {
+    if (typeof aboutDialog.showModal === 'function') {
+      aboutDialog.showModal();
+    } else {
+      aboutDialog.setAttribute('open', '');
+    }
+  }
+
+  function closeAboutDialog() {
+    if (typeof aboutDialog.close === 'function') aboutDialog.close();
+    else aboutDialog.removeAttribute('open');
+  }
+
   function initialize() {
     colorInput.value = brightPalette[Math.floor(Math.random() * brightPalette.length)];
     colorInput.addEventListener('input', syncPickerPosition);
@@ -497,6 +749,10 @@
     root.visualViewport?.addEventListener('resize', scheduleResize, { passive: true });
 
     canvas.addEventListener('pointerdown', handleCanvasPointerDown);
+    root.addEventListener('pointerdown', detectAdditionalTouch, { capture: true });
+    root.addEventListener('pointermove', handleCanvasPointerMove, { passive: true });
+    root.addEventListener('pointerup', (event) => finishCanvasPointer(event));
+    root.addEventListener('pointercancel', (event) => finishCanvasPointer(event, true));
     canvas.addEventListener('keydown', handleCanvasKeyDown);
     colorHandle.addEventListener('pointerdown', startPickerDrag);
     root.addEventListener('pointermove', movePicker, { passive: false });
@@ -504,6 +760,15 @@
     root.addEventListener('pointercancel', (event) => finishPickerDrag(event, false));
     colorHandle.addEventListener('click', (event) => {
       if (event.detail === 0) openColorPicker();
+    });
+    pauseButton.addEventListener('click', () => {
+      setVisualsPaused(!visualsPaused);
+    });
+    inviteButton.addEventListener('click', shareCanvas);
+    aboutButton.addEventListener('click', openAboutDialog);
+    aboutClose.addEventListener('click', closeAboutDialog);
+    aboutDialog.addEventListener('click', (event) => {
+      if (event.target === aboutDialog) closeAboutDialog();
     });
 
     root.addEventListener('offline', () => {

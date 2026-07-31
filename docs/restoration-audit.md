@@ -80,11 +80,15 @@ The smallest restored product worth deploying is:
 
 The restoration therefore keeps vanilla browser rendering and a one-process relay while rebuilding validation, delivery semantics, static-file isolation, connection health, accessibility basics, tests, documentation, and preview safety.
 
-## Deliberately deferred
+## Deliberately deferred beyond the restored beta
 
 - Accounts, profiles, chat, feeds, permanent artwork, rooms, moderation, and databases
-- Advertising, donation prompts, paid acquisition, subscriptions, or other monetisation
-- Analytics beyond a separately reviewed privacy-compatible aggregate design
+- Programmatic advertising, paid acquisition, billing, subscriptions, and
+  monetised product features; the current About dialog contains only a quiet
+  external support link
+- Third-party, persistent, referral, or user-level analytics; the restored
+  server emits only privacy-reviewed process-lifetime aggregate operational
+  counters
 - Native App Store packaging
 - Multiple server instances or cross-instance pub/sub
 - Reusing or replacing the suspended production service

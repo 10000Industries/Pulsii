@@ -4,12 +4,23 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#000000">
-  <meta name="description" content="Choose a colour and tap. Everyone here sees the pulse. No accounts or canvas history.">
+  <meta name="description" content="One public canvas, shared live. Tap and everyone here sees a fading pulse of colour.">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Pulsii">
   <meta property="og:title" content="Pulsii">
-  <meta property="og:description" content="One shared canvas. Choose a colour, tap, and everyone here sees the pulse.">
+  <meta property="og:description" content="One shared moment. Tap and everyone here sees a fading pulse of colour.">
   <meta property="og:type" content="website">
+  <!-- PULSII_PUBLIC_META -->
   <meta property="og:image" content="/og-image.png">
-  <title>Pulsii — one shared pulse of colour</title>
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Overlapping coloured pulse rings on a black canvas">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Pulsii">
+  <meta name="twitter:description" content="One shared moment. Tap and everyone here sees a fading pulse of colour.">
+  <meta name="twitter:image" content="/og-image.png">
+  <title>Pulsii — one shared moment</title>
   <link rel="icon" href="/favicon.ico" sizes="any">
   <link rel="apple-touch-icon" href="/favicon.png">
   <link rel="manifest" href="/manifest.webmanifest">
@@ -17,21 +28,44 @@
 </head>
 <body>
   <main id="stage" aria-label="Pulsii shared canvas">
-    <canvas id="canvas" tabindex="0" aria-label="Tap anywhere, or press Enter, to send a coloured pulse"></canvas>
+    <canvas id="canvas" tabindex="0" aria-label="Tap anywhere, or press Enter, to send a coloured pulse">
+      Pulsii is a visual shared canvas. Use the controls after the canvas to pause visuals, invite someone, or read about the experience.
+    </canvas>
 
     <section id="intro" aria-labelledby="intro-title">
       <h1 id="intro-title">Pulsii</h1>
-      <p>choose a colour. tap anywhere.<br>everyone here sees the pulse.</p>
-      <p class="ephemeral">pulses fade. the canvas keeps no history.</p>
+      <p>tap anywhere.<br>everyone here sees the pulse.</p>
+      <p class="ephemeral">one public canvas, shared live.<br>pulses fade. the canvas keeps no history.</p>
     </section>
 
-    <div id="connection-status" data-state="connecting" role="status" aria-live="polite">
-      <span class="status-dot" aria-hidden="true"></span>
-      <span id="status-text">connecting</span>
+    <div id="presence-controls">
+      <div id="connection-status" data-state="connecting" role="status" aria-live="polite">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="status-text">connecting</span>
+      </div>
+      <div id="live-actions" aria-label="Canvas controls">
+        <button id="pause-button" class="quiet-control" type="button" aria-pressed="false">pause</button>
+        <button id="invite-button" class="quiet-control" type="button" disabled>invite</button>
+        <button id="about-button" class="quiet-control" type="button" aria-haspopup="dialog">about</button>
+      </div>
     </div>
+
+    <div id="action-feedback" role="status" aria-live="polite"></div>
 
     <input id="color-picker" type="color" value="#00d4ff" tabindex="-1" aria-hidden="true">
     <button id="color-handle" type="button" aria-label="Choose pulse colour"></button>
+
+    <dialog id="about-dialog" aria-labelledby="about-title">
+      <button id="about-close" type="button" aria-label="Close about Pulsii">close</button>
+      <h2 id="about-title">one shared moment.</h2>
+      <p>Pulsii is one public canvas. A tap becomes a fading pulse for everyone currently here.</p>
+      <p>No account, name, message, or canvas history. This is not a private room. Pulsii records aggregate operational counters without pulse positions, colours, or identifiers; the hosting provider may also keep ordinary connection logs.</p>
+      <div class="about-links">
+        <a href="https://buymeacoffee.com/10000industries" target="_blank" rel="noopener noreferrer">support Pulsii</a>
+        <a href="https://github.com/10000Industries/Pulsii/blob/agent/pulsii-restoration/docs/privacy-and-safety.md" target="_blank" rel="noopener noreferrer">privacy notes</a>
+        <a href="https://github.com/10000Industries/Pulsii" target="_blank" rel="noopener noreferrer">source and feedback</a>
+      </div>
+    </dialog>
   </main>
 
   <noscript>Pulsii needs JavaScript to draw and share pulses.</noscript>

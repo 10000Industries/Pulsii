@@ -48,17 +48,27 @@ The restored build opens directly on the canvas. Its implemented onboarding is:
 
 > **Pulsii**
 >
-> choose a colour. tap anywhere.
+> tap anywhere.
 >
 > everyone here sees the pulse.
 >
+> one public canvas, shared live.
+>
 > pulses fade. the canvas keeps no history.
 
-There is no entry gate, About panel, share control, invitation mechanism, or fake occupancy. The status reports WebSocket connections rather than people.
+There is no entry gate or fake occupancy. The status reports WebSocket
+connections rather than people and says when only one connection is present.
+The canvas now includes:
+
+- native invite/share with copied-link fallback
+- an always-available pause/resume control
+- a small About/privacy panel with support and source/feedback links
+- an honest crowded notice when aggregate protection drops a pulse
+- reduced-motion rendering and safe-area-aware mobile controls
 
 ## Proposed landing-page copy
 
-This is future wrapper copy, not implemented in the restoration:
+This remains possible wrapper copy, not a requirement for the direct canvas:
 
 > **One shared moment.**
 >
@@ -125,7 +135,12 @@ Included in this branch:
 | Legacy high-resolution icon | `favicon.png` | Retained 1024×1024 RGBA Penrose raster |
 | Browser icon | `favicon.ico` | 16/32/48px favicon |
 
-The Penrose favicon and ring-based launch concepts are not yet a unified identity. Resolve that mismatch before public launch. The PNG concepts were exported from SVG sources that specify a system-font stack rather than bundled fonts, so reproduction can vary by machine; document the export environment or replace the type with outlines before final production use.
+The Penrose favicon and ring-based launch concepts are not yet a unified
+identity. Resolve that mismatch before public launch. The Open Graph PNG was
+regenerated from its SVG with Sharp/libvips and DejaVu Sans; the square source
+still uses a system-font stack, so reproduction can vary by machine. Document
+the final export environment or replace the type with outlines before final
+production use.
 
 Capture from the verified deployment before launch:
 
@@ -153,21 +168,33 @@ Use one public channel at a time so outcomes remain attributable. Do not start w
 
 ## Proposed measurement design
 
-The restored application contains no analytics, event identifiers, share control, referral tracking, or user identifier. The following measures are therefore proposed instrumentation, not measurements the current build can produce. Any implementation requires privacy review and must preserve the product's no-history contract.
+The restored application contains no third-party analytics, event identifiers,
+referral tracking, or user identifier. It does contain a share control and
+one-minute process-lifetime aggregate operational counters. The counters can
+report page loads, connections, first-pulse activation, accepted/shared pulses,
+congestion drops, fanout, average duration, peak concurrency, and memory. They
+cannot identify reciprocity or a referred visitor.
 
 Proposed north-star event:
 
 > **Reciprocal shared moment:** one browser connection receives a pulse from another connection and responds within ten seconds.
 
-Privacy-compatible aggregate measures:
+Current aggregate measures:
 
-- First-pulse activation within ten seconds
-- Shared-moment rate within 30 seconds
-- Reciprocity rate
-- Median active duration and percentage active for at least one minute
-- Invite/share-copy rate and referred-visitor activation, after an explicit share mechanism exists
+- Connections activated by at least one accepted pulse
 - Peak concurrent connections
-- Remote-event latency, reconnects, drops, and rate-limit events
+- Accepted and shared pulses
+- Capacity rejects, per-client limits, global drops, slow clients, and fanout
+- Average closed-connection duration
+- Page loads, uptime, deployed commit, memory, and approximate event-loop lag
+
+Still proposed, not currently measured:
+
+- first-pulse activation within ten seconds
+- reciprocal response within ten seconds
+- percentage active for at least one minute
+- invite/share rate and referred-visitor activation
+- remote-event latency and client reconnect success
 
 Prefer aggregate counters and time buckets. Do not store pulse coordinates, colours, stable identifiers, or user-level histories merely for marketing. Until instrumentation is approved, a controlled session can use facilitator observation plus timestamped snapshots of the instantaneous `/healthz` connection count.
 
@@ -181,7 +208,7 @@ These thresholds are proposed decision rules, not industry benchmarks. Run them 
 | Reciprocity test | Remote presence changes behaviour | At least 40% respond within 10s |
 | Scheduled vs anytime link | Concentrated arrival creates a better experience | Scheduled window doubles shared-moment rate |
 | Copy test | Emotional framing beats technical explanation | “One shared moment” improves entry-to-tap rate |
-| Invitation timing | Sharing works after a remote pulse | At least 5% copy/share after first shared event |
+| Invitation loop | A solo visitor will bring someone into the canvas | At least three testers say they would invite someone |
 | Social-value test | The live layer is the product | Shared sessions last at least twice as long as solo sessions |
 
 Initial technical gate: p95 remote-pulse latency below roughly 500ms, no silent disconnects, and no critical mobile-browser failure. Measuring latency requires an explicit test harness or privacy-reviewed ephemeral event timing; the restoration protocol does not calculate it.
@@ -197,8 +224,14 @@ Initial technical gate: p95 remote-pulse latency below roughly 500ms, no silent 
 - Motion/flashing safety review and a sufficient pause/exit mechanism
 - Mobile Safari/iPad interaction pass
 - Repository licence decision
-- Replace or parameterize the preview-only `noindex` headers and `robots.txt`, then verify crawl policy intentionally
-- Set an absolute Open Graph/Twitter image URL for the final hostname and verify that external social-card fetchers can retrieve it
+- Set a verified `PUBLIC_ORIGIN`, then intentionally set `PUBLIC_MODE=true` only
+  when indexing is approved; verify the response header and `robots.txt`
+- Verify the generated absolute Open Graph, Twitter, and canonical URLs only
+  after that origin actually points to the reviewed deployment
 - No DNS, domain, payment, tester invitation, contact, channel submission, announcement, private marketing, or public message without separate approval
 
 The decisive product question is whether Pulsii works as an always-open place or as a recurring scheduled communal moment. If scheduled sessions work and ambient traffic does not, that is a coherent product result rather than a failure.
+
+The detailed review-day sequence is in [the August 5
+runbook](august-5-runbook.md); the observation sheet is the
+[controlled-beta checklist](controlled-beta-checklist.md).

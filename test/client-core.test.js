@@ -6,7 +6,10 @@ const {
   MAX_ACTIVE_PULSES,
   PULSE_LIFETIME_SECONDS,
   REDUCED_MAX_ACTIVE_PULSES,
+  canonicalShareUrl,
+  connectionLabel,
   hexToRgb,
+  isTapGesture,
   normalizePulse,
   pulseAgeSeconds,
   pulseOpacity,
@@ -82,4 +85,22 @@ test('bounds reconnect delay and active pulse capacity', () => {
   assert.equal(reconnectDelay(20, 1), 8000);
   assert.equal(MAX_ACTIVE_PULSES, 180);
   assert.equal(REDUCED_MAX_ACTIVE_PULSES, 36);
+});
+
+test('uses honest presence labels and a canonical invitation URL', () => {
+  assert.equal(connectionLabel(null), 'live');
+  assert.equal(connectionLabel(1), 'live · just you here');
+  assert.equal(connectionLabel(2), 'live · 2 connections');
+  assert.equal(
+    canonicalShareUrl('https://pulsii.net/?utm_source=test#moment'),
+    'https://pulsii.net/',
+  );
+  assert.equal(canonicalShareUrl('not a url'), 'not a url');
+});
+
+test('accepts a single touch tap but rejects drags and multi-touch gestures', () => {
+  assert.equal(isTapGesture(10, 10, 16, 17, false), true);
+  assert.equal(isTapGesture(10, 10, 40, 10, false), false);
+  assert.equal(isTapGesture(10, 10, 10, 10, true), false);
+  assert.equal(isTapGesture(10, 10, Number.NaN, 10, false), false);
 });
