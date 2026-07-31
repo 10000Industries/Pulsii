@@ -1,106 +1,175 @@
-/* Full-viewport black stage */
-html, body {
-  margin: 0;
-  padding: 0;
-  height: 100%;
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   background: #000;
-  overflow: hidden;
-  font-family: sans-serif;
 }
 
-/* Canvas spans the entire viewport */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#stage {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #000;
+}
+
+body {
+  min-height: 100svh;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
 #canvas {
   position: fixed;
-  top: 0;
-  left: 0;
+  inset: 0;
   display: block;
-  margin: 0;
-  padding: 0;
+  width: 100%;
+  height: 100%;
   background: #000;
+  cursor: crosshair;
   touch-action: none;
 }
 
-/* Hidden native colour input; triggered programmatically */
+#canvas:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.78);
+  outline-offset: -5px;
+}
+
+#intro {
+  position: fixed;
+  z-index: 2;
+  top: max(10vh, calc(env(safe-area-inset-top) + 32px));
+  left: 50%;
+  width: min(86vw, 440px);
+  transform: translateX(-50%);
+  color: rgba(255, 255, 255, 0.82);
+  text-align: center;
+  pointer-events: none;
+  transition: opacity 700ms ease, transform 700ms ease;
+}
+
+#intro.dismissed {
+  opacity: 0;
+  transform: translate(-50%, -8px);
+}
+
+#intro h1 {
+  margin: 0 0 10px;
+  color: #fff;
+  font-size: clamp(1.55rem, 4vw, 2.25rem);
+  font-weight: 520;
+  letter-spacing: 0.12em;
+  line-height: 1;
+}
+
+#intro p {
+  margin: 0;
+  font-size: clamp(0.9rem, 2.4vw, 1rem);
+  font-weight: 380;
+  letter-spacing: 0.025em;
+  line-height: 1.55;
+}
+
+#intro .ephemeral {
+  margin-top: 10px;
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 0.78rem;
+}
+
+#connection-status {
+  position: fixed;
+  z-index: 3;
+  right: max(18px, calc(env(safe-area-inset-right) + 14px));
+  bottom: max(18px, calc(env(safe-area-inset-bottom) + 14px));
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 0.76rem;
+  letter-spacing: 0.035em;
+  line-height: 1;
+  pointer-events: none;
+  user-select: none;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f3b63f;
+  box-shadow: 0 0 8px rgba(243, 182, 63, 0.7);
+}
+
+#connection-status[data-state="live"] .status-dot {
+  background: #60e893;
+  box-shadow: 0 0 8px rgba(96, 232, 147, 0.75);
+}
+
+#connection-status[data-state="offline"] .status-dot {
+  background: #ff6b6b;
+  box-shadow: 0 0 8px rgba(255, 107, 107, 0.7);
+}
+
 #color-picker {
   position: fixed;
-  width: 2px;
-  height: 2px;
+  z-index: 3;
+  width: 48px;
+  height: 48px;
+  margin: 0;
+  padding: 0;
+  border: 0;
   opacity: 0;
   pointer-events: none;
-  left: 0;
-  top: 0;
-  z-index: 10; /* ensure above canvas when temporarily enabled */
-  border: none;
-  padding: 0;
-  margin: 0;
 }
 
 #color-handle {
+  --pulse-color: #00d4ff;
   position: fixed;
-  width: 40px;
-  height: 40px;
+  z-index: 4;
+  width: 48px;
+  height: 48px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.7);
   border-radius: 50%;
-  border: 2px solid #000;
-  box-sizing: border-box;
-  background: #fff;
-  cursor: pointer;
-  z-index: 15;
+  outline: none;
+  background: #00d4ff;
+  box-shadow:
+    0 0 0 4px rgba(0, 0, 0, 0.82),
+    0 0 18px var(--pulse-color);
+  cursor: grab;
   touch-action: none;
   user-select: none;
 }
 
-/* Buy Me a Coffee prompt */
-#coffee-card {
+#color-handle:active {
+  cursor: grabbing;
+}
+
+#color-handle:focus-visible {
+  box-shadow:
+    0 0 0 4px #000,
+    0 0 0 6px rgba(255, 255, 255, 0.92),
+    0 0 18px var(--pulse-color);
+}
+
+noscript {
   position: fixed;
-  right: 16px;
-  bottom: 16px;
-  max-width: 320px;
-  padding: 12px 14px;
-  background: rgba(0, 0, 0, 0.85);
-  color: #f5f5f5;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 8px;
-  font-size: 14px;
-  line-height: 1.4;
-  display: none;
-  gap: 8px;
-  z-index: 20;
-}
-
-#coffee-card.visible {
-  display: flex;
-  flex-direction: column;
-}
-
-#coffee-card p {
-  margin: 0 0 8px 0;
-}
-
-#coffee-button {
-  align-self: flex-start;
-  padding: 8px 12px;
-  background: #0f75ff;
+  inset: 50% auto auto 50%;
+  z-index: 10;
+  width: min(82vw, 360px);
+  transform: translate(-50%, -50%);
   color: #fff;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 14px;
+  text-align: center;
 }
 
-#coffee-button:hover,
-#coffee-button:focus {
-  background: #2f87ff;
-}
-
-#coffee-close {
-  position: absolute;
-  top: 6px;
-  right: 8px;
-  background: none;
-  border: none;
-  color: #f5f5f5;
-  font-size: 16px;
-  cursor: pointer;
-  line-height: 1;
-  padding: 4px;
+@media (prefers-reduced-motion: reduce) {
+  #intro {
+    transition-duration: 1ms;
+  }
 }

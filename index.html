@@ -1,27 +1,40 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Pulsii</title>
-  <link rel="icon" type="image/x-icon" href="favicon.ico">
-  <link rel="stylesheet" href="style.css">
+  <meta name="theme-color" content="#000000">
+  <meta name="description" content="Choose a colour and tap. Everyone here sees the pulse. No accounts or canvas history.">
+  <meta property="og:title" content="Pulsii">
+  <meta property="og:description" content="One shared canvas. Choose a colour, tap, and everyone here sees the pulse.">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="/og-image.png">
+  <title>Pulsii — one shared pulse of colour</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/favicon.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <!-- Full-screen drawing surface -->
-  <canvas id="canvas"></canvas>
+  <main id="stage" aria-label="Pulsii shared canvas">
+    <canvas id="canvas" tabindex="0" aria-label="Tap anywhere, or press Enter, to send a coloured pulse"></canvas>
 
-  <!-- Continuous colour selector (native colour input gives a hue wheel in most browsers) -->
-  <input id="color-picker" type="color" aria-label="Pulse colour">
-  <div id="color-handle" aria-label="Colour picker handle"></div>
+    <section id="intro" aria-labelledby="intro-title">
+      <h1 id="intro-title">Pulsii</h1>
+      <p>choose a colour. tap anywhere.<br>everyone here sees the pulse.</p>
+      <p class="ephemeral">pulses fade. the canvas keeps no history.</p>
+    </section>
 
-  <!-- Buy Me a Coffee prompt (hidden by default) -->
-  <div id="coffee-card" aria-live="polite">
-    <button id="coffee-close" aria-label="Close support prompt">×</button>
-    <p>Enjoying Pulsii?</p>
-    <button id="coffee-button">Buy me a coffee</button>
-  </div>
+    <div id="connection-status" data-state="connecting" role="status" aria-live="polite">
+      <span class="status-dot" aria-hidden="true"></span>
+      <span id="status-text">connecting</span>
+    </div>
 
-  <script src="script.js"></script>
+    <input id="color-picker" type="color" value="#00d4ff" tabindex="-1" aria-hidden="true">
+    <button id="color-handle" type="button" aria-label="Choose pulse colour"></button>
+  </main>
+
+  <noscript>Pulsii needs JavaScript to draw and share pulses.</noscript>
+  <script src="/script.js"></script>
 </body>
 </html>

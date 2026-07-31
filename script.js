@@ -1,462 +1,531 @@
-// Minimal, heavily commented Pulse client.
-// Renders expanding circles with additive blending and syncs pulses via WebSocket.
+(function pulsiiModule(root) {
+  'use strict';
 
-const canvas = document.getElementById('canvas');
-const ctx = canvas.getContext('2d');
+  const PULSE_LIFETIME_SECONDS = 2.35;
+  const MAX_PULSE_ALPHA = 0.72;
+  const MAX_ACTIVE_PULSES = 180;
+  const REDUCED_MAX_ACTIVE_PULSES = 36;
+  const RECONNECT_BASE_MS = 500;
+  const RECONNECT_MAX_MS = 8000;
+  const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+  const PULSE_KEYS = new Set(['type', 'xNorm', 'yNorm', 'color']);
 
-// Colour picker UI state (DOM handle + hidden native input).
-const colorPicker = {
-  input: document.getElementById('color-picker'),
-  handle: document.getElementById('color-handle'),
-  radius: 20,
-  margin: 24,
-  x: null,
-  y: null,
-  isDraggingPicker: false,
-  pointerId: null,
-  dragStartX: 0,
-  dragStartY: 0,
-  pointerStartX: 0,
-  pointerStartY: 0,
-};
-
-// Track all active pulses. Each pulse grows outward and fades until alpha hits zero.
-const pulses = [];
-
-// Animation parameters chosen for a crisp, smooth feel.
-const MAX_PULSE_ALPHA = 0.22; // peak opacity per pulse (handled via globalAlpha)
-const GROWTH_RATE = 420;      // pixels per second the radius expands
-const PULSE_LIFETIME = 1.4;   // seconds a pulse lives
-
-// Optional local bot to emit test pulses for visual verification.
-const BOT_ENABLED = false;
-const BOT_COLOR = '#3399ff'; // distinct blue tone for easy spotting
-const BOT_INTERVAL_MS = 1500;
-let botTimer = null;
-
-// WebSocket endpoint for multi-user sync (uses current host/port for deploy friendliness).
-const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss' : 'ws';
-const WS_URL = `${WS_PROTOCOL}://${window.location.host}`;
-let socket;
-
-// Track CSS size and device pixel ratio so pointer math and drawing stay aligned.
-let cssWidth = 0;
-let cssHeight = 0;
-let deviceRatio = window.devicePixelRatio || 1;
-
-// Scale canvas to device pixels so circles stay sharp on HiDPI displays, while drawing in CSS units.
-function resizeCanvas() {
-  const viewport = window.visualViewport;
-  cssWidth = viewport ? viewport.width : window.innerWidth;
-  cssHeight = viewport ? viewport.height : window.innerHeight;
-  deviceRatio = window.devicePixelRatio || 1;
-
-  canvas.width = Math.round(cssWidth * deviceRatio);
-  canvas.height = Math.round(cssHeight * deviceRatio);
-  canvas.style.width = `${cssWidth}px`;
-  canvas.style.height = `${cssHeight}px`;
-
-  // Map drawing operations (in CSS pixels) to the backing store (device pixels).
-  ctx.setTransform(deviceRatio, 0, 0, deviceRatio, 0, 0);
-  ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  // Keep the colour picker visible and within bounds after resizes.
-  positionColorPicker();
-}
-
-// Clamp helper to keep the colour picker on screen.
-function positionColorPicker() {
-  if (colorPicker.x === null || colorPicker.y === null) {
-    colorPicker.x = colorPicker.margin + colorPicker.radius;
-    colorPicker.y = cssHeight - (colorPicker.margin + colorPicker.radius);
+  function clamp(value, minimum, maximum) {
+    return Math.min(maximum, Math.max(minimum, value));
   }
 
-  colorPicker.x = Math.min(Math.max(colorPicker.radius, colorPicker.x), Math.max(colorPicker.radius, cssWidth - colorPicker.radius));
-  colorPicker.y = Math.min(Math.max(colorPicker.radius, colorPicker.y), Math.max(colorPicker.radius, cssHeight - colorPicker.radius));
+  function normalizePulse(value) {
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      Array.isArray(value) ||
+      value.type !== 'pulse'
+    ) {
+      return null;
+    }
+    const keys = Object.keys(value);
+    if (keys.length !== PULSE_KEYS.size || keys.some((key) => !PULSE_KEYS.has(key))) return null;
+    if (!Number.isFinite(value.xNorm) || !Number.isFinite(value.yNorm)) return null;
+    if (value.xNorm < 0 || value.xNorm > 1 || value.yNorm < 0 || value.yNorm > 1) return null;
+    if (typeof value.color !== 'string' || !HEX_COLOR.test(value.color)) return null;
 
-  syncColorInputPosition();
-}
-
-// Keep the hidden input inside the viewport (helps mobile browsers allow the picker to open).
-function syncColorInputPosition() {
-  const x = colorPicker.x ?? colorPicker.radius;
-  const y = colorPicker.y ?? colorPicker.radius;
-  const size = colorPicker.radius * 2;
-  colorPicker.input.style.left = `${x - colorPicker.radius}px`;
-  colorPicker.input.style.top = `${y - colorPicker.radius}px`;
-  colorPicker.input.style.width = `${size}px`;
-  colorPicker.input.style.height = `${size}px`;
-  colorPicker.handle.style.left = `${x - colorPicker.radius}px`;
-  colorPicker.handle.style.top = `${y - colorPicker.radius}px`;
-  colorPicker.handle.style.background = colorPicker.input.value || '#ffffff';
-}
-
-// Convert #RRGGBB to an object so we can easily inject alpha later.
-function hexToRgb(hex) {
-  const cleaned = hex.replace('#', '');
-  const int = parseInt(cleaned, 16);
-  return {
-    r: (int >> 16) & 255,
-    g: (int >> 8) & 255,
-    b: int & 255,
-  };
-}
-
-// Generate a random bright-ish colour to avoid black defaults.
-function randomColor() {
-  const channel = () => Math.floor(Math.random() * 200) + 30; // keep within 30-229 to avoid extremes
-  const r = channel().toString(16).padStart(2, '0');
-  const g = channel().toString(16).padStart(2, '0');
-  const b = channel().toString(16).padStart(2, '0');
-  return `#${r}${g}${b}`;
-}
-
-// Create a new pulse at normalized coordinates (0-1) so it maps across screen sizes.
-function spawnPulse(normX, normY, colorHex) {
-  const rgb = hexToRgb(colorHex);
-  pulses.push({
-    normX,
-    normY,
-    rgb,
-    radius: 0,
-    age: 0, // track lifetime for opacity shaping
-  });
-}
-
-// Send a pulse to peers and create it locally immediately (no round-trip delay).
-function sendPulse(normX, normY, colorHex) {
-  spawnPulse(normX, normY, colorHex);
-
-  if (socket && socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ type: 'pulse', xNorm: normX, yNorm: normY, color: colorHex }));
-  }
-}
-
-// Local bot pulse generator for testing overlaps/timing (does not broadcast by default).
-function startBotPulse() {
-  if (botTimer) return;
-  botTimer = setInterval(() => {
-    // Use spawnPulse for local-only; swap to sendPulse(...) to broadcast to peers.
-    spawnPulse(0.5, 0.5, BOT_COLOR);
-  }, BOT_INTERVAL_MS);
-}
-
-function stopBotPulse() {
-  if (!botTimer) return;
-  clearInterval(botTimer);
-  botTimer = null;
-}
-
-function getPointerPosition(event) {
-  const rect = canvas.getBoundingClientRect();
-  const x = event.clientX - rect.left;
-  const y = event.clientY - rect.top;
-  // Normalize against the backing store to keep pulses consistent across devices.
-  return {
-    x,
-    y,
-    normX: (x * deviceRatio) / canvas.width,
-    normY: (y * deviceRatio) / canvas.height,
-  };
-}
-
-function getTouchPosition(touch) {
-  const rect = canvas.getBoundingClientRect();
-  const x = touch.clientX - rect.left;
-  const y = touch.clientY - rect.top;
-  return {
-    x,
-    y,
-    normX: (x * deviceRatio) / canvas.width,
-    normY: (y * deviceRatio) / canvas.height,
-  };
-}
-
-function openColorPicker() {
-  // Temporarily enable pointer events so mobile browsers allow the picker to open.
-  colorPicker.input.style.pointerEvents = 'auto';
-  colorPicker.input.focus({ preventScroll: true });
-
-  // Use the modern API if available; otherwise fall back to click().
-  if (typeof colorPicker.input.showPicker === 'function') {
-    colorPicker.input.showPicker();
-  } else {
-    colorPicker.input.click();
+    return {
+      type: 'pulse',
+      xNorm: value.xNorm,
+      yNorm: value.yNorm,
+      color: value.color.toLowerCase(),
+    };
   }
 
-  // Turn pointer events back off shortly after to keep canvas interactions clean.
-  setTimeout(() => {
-    colorPicker.input.style.pointerEvents = 'none';
-  }, 200);
-}
-
-function handleCanvasPointerDown(event) {
-  if (colorPicker.isDraggingPicker || event.target !== canvas) return;
-  const { normX, normY } = getPointerPosition(event);
-  const colorHex = colorPicker.input.value;
-  sendPulse(normX, normY, colorHex);
-}
-
-function handleCanvasTouchStart(event) {
-  if (colorPicker.isDraggingPicker) return;
-  if (event.touches.length === 0) return;
-  if (event.target !== canvas) return;
-  const touch = event.touches[0];
-  const { normX, normY } = getTouchPosition(touch);
-  const colorHex = colorPicker.input.value;
-  sendPulse(normX, normY, colorHex);
-}
-
-// Colour picker drag handlers (separate from canvas pulses).
-function startPickerDrag(x, y, id) {
-  colorPicker.isDraggingPicker = true;
-  colorPicker.pointerId = id;
-  colorPicker.dragStartX = colorPicker.x;
-  colorPicker.dragStartY = colorPicker.y;
-  colorPicker.pointerStartX = x;
-  colorPicker.pointerStartY = y;
-}
-
-function movePickerDrag(x, y) {
-  if (!colorPicker.isDraggingPicker) return;
-  const deltaX = x - colorPicker.pointerStartX;
-  const deltaY = y - colorPicker.pointerStartY;
-  colorPicker.x = colorPicker.dragStartX + deltaX;
-  colorPicker.y = colorPicker.dragStartY + deltaY;
-  positionColorPicker();
-}
-
-function endPickerDrag(triggerPicker) {
-  if (!colorPicker.isDraggingPicker) return;
-  const moved = Math.hypot(colorPicker.x - colorPicker.dragStartX, colorPicker.y - colorPicker.dragStartY);
-  colorPicker.isDraggingPicker = false;
-  colorPicker.pointerId = null;
-  if (triggerPicker && moved < 3) {
-    openColorPicker();
+  function hexToRgb(hex) {
+    if (typeof hex !== 'string' || !HEX_COLOR.test(hex)) return null;
+    const value = Number.parseInt(hex.slice(1), 16);
+    return {
+      r: (value >> 16) & 255,
+      g: (value >> 8) & 255,
+      b: value & 255,
+    };
   }
-}
 
-function handlePickerPointerDown(event) {
-  const { x, y } = getPointerPosition(event);
-  startPickerDrag(x, y, event.pointerId);
-  try {
-    colorPicker.handle.setPointerCapture(event.pointerId);
-  } catch (err) {
-    // Ignore capture errors.
+  function pulseOpacity(ageSeconds, lifetimeSeconds = PULSE_LIFETIME_SECONDS) {
+    const progress = clamp(ageSeconds / lifetimeSeconds, 0, 1);
+    return MAX_PULSE_ALPHA * Math.exp(-4.2 * progress);
   }
-  event.stopPropagation();
-  event.preventDefault();
-}
 
-function handlePickerPointerMove(event) {
-  if (!colorPicker.isDraggingPicker || event.pointerId !== colorPicker.pointerId) return;
-  const { x, y } = getPointerPosition(event);
-  movePickerDrag(x, y);
-  event.stopPropagation();
-  event.preventDefault();
-}
-
-function handlePickerPointerUp(event) {
-  if (!colorPicker.isDraggingPicker || event.pointerId !== colorPicker.pointerId) return;
-  try {
-    colorPicker.handle.releasePointerCapture(event.pointerId);
-  } catch (err) {
-    // Ignore release errors.
+  function pulseAgeSeconds(createdAt, now) {
+    if (!Number.isFinite(createdAt) || !Number.isFinite(now)) return 0;
+    return Math.max(0, (now - createdAt) / 1000);
   }
-  endPickerDrag(true);
-  event.stopPropagation();
-  event.preventDefault();
-}
 
-function handlePickerPointerCancel(event) {
-  if (!colorPicker.isDraggingPicker || event.pointerId !== colorPicker.pointerId) return;
-  endPickerDrag(false);
-  event.stopPropagation();
-  event.preventDefault();
-}
-
-// Touch event handlers mirror pointer logic; prevent default to avoid scroll/zoom on canvas.
-function findTouchById(touchList, id) {
-  for (let i = 0; i < touchList.length; i += 1) {
-    if (touchList[i].identifier === id) return touchList[i];
+  function reconnectDelay(attempt, randomValue = Math.random()) {
+    const exponential = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * (2 ** Math.max(0, attempt)));
+    const jitter = 0.8 + (clamp(randomValue, 0, 1) * 0.4);
+    return Math.min(RECONNECT_MAX_MS, Math.round(exponential * jitter));
   }
-  return null;
-}
 
-function handlePickerTouchStart(event) {
-  if (event.touches.length === 0) return;
-  const touch = event.touches[0];
-  const { x, y } = getTouchPosition(touch);
-  startPickerDrag(x, y, touch.identifier);
-  event.stopPropagation();
-  event.preventDefault();
-}
-
-function handlePickerTouchMove(event) {
-  if (!colorPicker.isDraggingPicker) return;
-  const touch = findTouchById(event.touches, colorPicker.pointerId);
-  if (!touch) return;
-  const { x, y } = getTouchPosition(touch);
-  movePickerDrag(x, y);
-  event.stopPropagation();
-  event.preventDefault();
-}
-
-function handlePickerTouchEnd(event) {
-  if (!colorPicker.isDraggingPicker) return;
-  const touch = findTouchById(event.changedTouches, colorPicker.pointerId);
-  if (!touch) return;
-  endPickerDrag(true);
-  event.stopPropagation();
-  event.preventDefault();
-}
-
-function handlePickerTouchCancel(event) {
-  if (!colorPicker.isDraggingPicker) return;
-  endPickerDrag(false);
-  event.stopPropagation();
-  event.preventDefault();
-}
-
-// Attempt to open and maintain a WebSocket connection to sync pulses across users.
-function connectWebSocket() {
-  socket = new WebSocket(WS_URL);
-
-  socket.addEventListener('open', () => {
-    console.log('WebSocket connected');
+  const core = Object.freeze({
+    HEX_COLOR,
+    MAX_ACTIVE_PULSES,
+    PULSE_LIFETIME_SECONDS,
+    REDUCED_MAX_ACTIVE_PULSES,
+    hexToRgb,
+    normalizePulse,
+    pulseAgeSeconds,
+    pulseOpacity,
+    reconnectDelay,
   });
 
-  socket.addEventListener('message', (event) => {
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = core;
+  }
+
+  if (!root.document) return;
+
+  const document = root.document;
+  const canvas = document.getElementById('canvas');
+  const context = canvas && canvas.getContext('2d');
+  const intro = document.getElementById('intro');
+  const status = document.getElementById('connection-status');
+  const statusText = document.getElementById('status-text');
+  const colorInput = document.getElementById('color-picker');
+  const colorHandle = document.getElementById('color-handle');
+
+  if (!canvas || !context || !status || !statusText || !colorInput || !colorHandle) return;
+
+  const brightPalette = ['#00d4ff', '#ff4d8d', '#ffd166', '#7cff6b', '#b388ff', '#ff7a45'];
+  const reducedMotion = root.matchMedia('(prefers-reduced-motion: reduce)');
+  const pulses = [];
+
+  let cssWidth = 0;
+  let cssHeight = 0;
+  let deviceRatio = 1;
+  let socket = null;
+  let reconnectTimer = null;
+  let reconnectAttempt = 0;
+  let presenceCount = null;
+  let connectionStopped = false;
+  let resizeFrame = null;
+  let animationFrame = null;
+
+  const picker = {
+    radius: 24,
+    margin: 18,
+    x: null,
+    y: null,
+    dragging: false,
+    pointerId: null,
+    startX: 0,
+    startY: 0,
+    pointerStartX: 0,
+    pointerStartY: 0,
+    maxTravel: 0,
+  };
+
+  function setStatus(state, text) {
+    status.dataset.state = state;
+    statusText.textContent = text;
+  }
+
+  function showLiveStatus() {
+    if (presenceCount === 1) {
+      setStatus('live', 'live · 1 connection');
+    } else if (presenceCount > 1) {
+      setStatus('live', `live · ${presenceCount} connections`);
+    } else {
+      setStatus('live', 'live');
+    }
+  }
+
+  function syncPickerPosition() {
+    if (picker.x === null || picker.y === null) {
+      picker.x = picker.margin + picker.radius;
+      picker.y = cssHeight - picker.margin - picker.radius;
+    }
+
+    picker.x = clamp(picker.x, picker.radius, Math.max(picker.radius, cssWidth - picker.radius));
+    picker.y = clamp(picker.y, picker.radius, Math.max(picker.radius, cssHeight - picker.radius));
+
+    const color = colorInput.value.toLowerCase();
+    colorHandle.style.left = `${picker.x - picker.radius}px`;
+    colorHandle.style.top = `${picker.y - picker.radius}px`;
+    colorHandle.style.backgroundColor = color;
+    colorHandle.style.color = color;
+    colorHandle.style.setProperty('--pulse-color', color);
+    colorHandle.setAttribute('aria-label', `Choose pulse colour. Current colour ${color}`);
+
+    colorInput.style.left = `${picker.x - picker.radius}px`;
+    colorInput.style.top = `${picker.y - picker.radius}px`;
+    colorInput.style.width = `${picker.radius * 2}px`;
+    colorInput.style.height = `${picker.radius * 2}px`;
+  }
+
+  function resizeCanvas() {
+    cssWidth = Math.max(1, root.innerWidth);
+    cssHeight = Math.max(1, root.innerHeight);
+    deviceRatio = Math.min(2, root.devicePixelRatio || 1);
+
+    canvas.width = Math.round(cssWidth * deviceRatio);
+    canvas.height = Math.round(cssHeight * deviceRatio);
+    context.setTransform(deviceRatio, 0, 0, deviceRatio, 0, 0);
+    context.fillStyle = '#000';
+    context.fillRect(0, 0, cssWidth, cssHeight);
+    syncPickerPosition();
+    if (pulses.length > 0) startAnimation();
+  }
+
+  function scheduleResize() {
+    if (resizeFrame !== null) return;
+    resizeFrame = root.requestAnimationFrame(() => {
+      resizeFrame = null;
+      resizeCanvas();
+    });
+  }
+
+  function addPulse(pulse) {
+    const normalized = normalizePulse(pulse);
+    if (!normalized) return false;
+    const rgb = hexToRgb(normalized.color);
+    if (!rgb) return false;
+
+    const pulseLimit = reducedMotion.matches
+      ? REDUCED_MAX_ACTIVE_PULSES
+      : MAX_ACTIVE_PULSES;
+    if (pulses.length >= pulseLimit) {
+      pulses.splice(0, pulses.length - pulseLimit + 1);
+    }
+
+    pulses.push({
+      xNorm: normalized.xNorm,
+      yNorm: normalized.yNorm,
+      color: normalized.color,
+      rgb,
+      createdAt: root.performance.now(),
+    });
+    startAnimation();
+    return true;
+  }
+
+  function sendPulse(xNorm, yNorm) {
+    const pulse = normalizePulse({
+      type: 'pulse',
+      xNorm,
+      yNorm,
+      color: colorInput.value,
+    });
+
+    if (!pulse) return;
+    addPulse(pulse);
+
+    if (
+      socket?.readyState === root.WebSocket.OPEN &&
+      Number.isInteger(presenceCount)
+    ) {
+      socket.send(JSON.stringify(pulse));
+      intro?.classList.add('dismissed');
+      return;
+    }
+
+    if (!root.navigator.onLine) {
+      setStatus('offline', 'not shared · offline');
+    } else {
+      setStatus(
+        'connecting',
+        reconnectAttempt > 0
+          ? 'not shared · reconnecting'
+          : 'not shared · connecting',
+      );
+    }
+  }
+
+  function pointerPosition(event) {
+    const bounds = canvas.getBoundingClientRect();
+    return {
+      xNorm: clamp((event.clientX - bounds.left) / bounds.width, 0, 1),
+      yNorm: clamp((event.clientY - bounds.top) / bounds.height, 0, 1),
+    };
+  }
+
+  function handleCanvasPointerDown(event) {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    const { xNorm, yNorm } = pointerPosition(event);
+    sendPulse(xNorm, yNorm);
+  }
+
+  function handleCanvasKeyDown(event) {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    sendPulse(0.5, 0.5);
+  }
+
+  function openColorPicker() {
+    colorInput.style.pointerEvents = 'auto';
     try {
-      const data = JSON.parse(event.data);
-      const { type, xNorm, yNorm, color } = data || {};
-
-      if (type === 'pulse' && typeof xNorm === 'number' && typeof yNorm === 'number' && typeof color === 'string') {
-        // Convert normalized coords back into canvas space before drawing.
-        const clampedX = Math.max(0, Math.min(1, xNorm));
-        const clampedY = Math.max(0, Math.min(1, yNorm));
-        const pxX = clampedX * canvas.width;
-        const pxY = clampedY * canvas.height;
-        const normX = pxX / canvas.width; // stays normalized for spawnPulse
-        const normY = pxY / canvas.height;
-        spawnPulse(normX, normY, color);
+      colorInput.focus({ preventScroll: true });
+      if (typeof colorInput.showPicker === 'function') {
+        colorInput.showPicker();
+      } else {
+        colorInput.click();
       }
-    } catch (err) {
-      // Ignore malformed messages to keep the loop resilient.
-      console.error('Ignoring bad message', err);
+    } catch (error) {
+      try {
+        colorInput.click();
+      } catch (fallbackError) {
+        // The pulse canvas remains usable if a browser blocks its native picker.
+      }
     }
-  });
+    root.setTimeout(() => {
+      colorInput.style.pointerEvents = 'none';
+    }, 200);
+  }
 
-  socket.addEventListener('close', () => {
-    console.log('WebSocket disconnected, retrying...');
-    // Lightweight reconnect loop; keeps trying without overwhelming the server.
-    setTimeout(connectWebSocket, 500);
-  });
+  function startPickerDrag(event) {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    picker.dragging = true;
+    picker.pointerId = event.pointerId;
+    picker.startX = picker.x;
+    picker.startY = picker.y;
+    picker.pointerStartX = event.clientX;
+    picker.pointerStartY = event.clientY;
+    picker.maxTravel = 0;
+    try {
+      colorHandle.setPointerCapture(event.pointerId);
+    } catch (error) {
+      // Window-level pointer listeners below provide the fallback.
+    }
+    event.stopPropagation();
+    event.preventDefault();
+  }
 
-  socket.addEventListener('error', () => {
-    // Errors are followed by close; allow the reconnect logic to run.
-  });
-}
+  function movePicker(event) {
+    if (!picker.dragging || event.pointerId !== picker.pointerId) return;
+    const deltaX = event.clientX - picker.pointerStartX;
+    const deltaY = event.clientY - picker.pointerStartY;
+    picker.maxTravel = Math.max(picker.maxTravel, Math.hypot(deltaX, deltaY));
+    picker.x = picker.startX + deltaX;
+    picker.y = picker.startY + deltaY;
+    syncPickerPosition();
+    event.stopPropagation();
+    event.preventDefault();
+  }
 
-// Main render loop: update physics, clear, then draw all pulses with additive blend.
-let lastTime = performance.now();
-function animate(now) {
-  const deltaSec = Math.min((now - lastTime) / 1000, 0.05); // cap delta to avoid jumps
-  lastTime = now;
+  function finishPickerDrag(event, shouldOpen) {
+    if (!picker.dragging || event.pointerId !== picker.pointerId) return;
+    const finalTravel = Math.hypot(
+      event.clientX - picker.pointerStartX,
+      event.clientY - picker.pointerStartY,
+    );
+    picker.maxTravel = Math.max(picker.maxTravel, finalTravel);
 
-  // Gentle trailing fade so bright spots decay over time.
-  ctx.save();
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.05)';
-  ctx.fillRect(0, 0, cssWidth, cssHeight);
-  ctx.restore();
-
-  // Update and draw each pulse.
-  for (let i = pulses.length - 1; i >= 0; i -= 1) {
-    const pulse = pulses[i];
-    pulse.age += deltaSec;
-    pulse.radius += GROWTH_RATE * deltaSec;
-
-    const lifeT = Math.min(1, pulse.age / PULSE_LIFETIME); // 0..1
-    const bell = Math.sin(Math.PI * lifeT); // peaks mid-life, 0 at start/end
-    const alpha = MAX_PULSE_ALPHA * bell;
-
-    if (lifeT >= 1) {
-      pulses.splice(i, 1);
-      continue;
+    if (
+      typeof colorHandle.hasPointerCapture === 'function' &&
+      colorHandle.hasPointerCapture(event.pointerId)
+    ) {
+      try {
+        colorHandle.releasePointerCapture(event.pointerId);
+      } catch (error) {
+        // Ignore capture cleanup failures from interrupted touch gestures.
+      }
     }
 
-    const x = pulse.normX * cssWidth;
-    const y = pulse.normY * cssHeight;
+    picker.dragging = false;
+    picker.pointerId = null;
+    event.stopPropagation();
+    event.preventDefault();
 
-    // Soft radial glow: brightest near center, fades to transparent at edge.
-    const grad = ctx.createRadialGradient(x, y, 0, x, y, pulse.radius);
-    grad.addColorStop(0, `rgba(${pulse.rgb.r}, ${pulse.rgb.g}, ${pulse.rgb.b}, 0.9)`);
-    grad.addColorStop(0.4, `rgba(${pulse.rgb.r}, ${pulse.rgb.g}, ${pulse.rgb.b}, 0.5)`);
-    grad.addColorStop(1, `rgba(${pulse.rgb.r}, ${pulse.rgb.g}, ${pulse.rgb.b}, 0)`);
-
-    ctx.save();
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.arc(x, y, pulse.radius, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
+    if (shouldOpen && picker.maxTravel < 5) openColorPicker();
   }
 
-  requestAnimationFrame(animate);
-}
+  function handleMessage(event) {
+    let message;
+    try {
+      message = JSON.parse(event.data);
+    } catch (error) {
+      return;
+    }
 
-// Initialize everything once the document is ready.
-function init() {
-  // Ensure the colour handle starts with a random, visible hue on black.
-  colorPicker.input.value = randomColor();
-  colorPicker.input.addEventListener('input', syncColorInputPosition);
+    if (message?.type === 'presence' && Number.isInteger(message.count) && message.count >= 0) {
+      presenceCount = message.count;
+      reconnectAttempt = 0;
+      showLiveStatus();
+      return;
+    }
 
-  resizeCanvas();
-  window.addEventListener('resize', resizeCanvas);
-  canvas.addEventListener('pointerdown', handleCanvasPointerDown);
-  canvas.addEventListener('touchstart', handleCanvasTouchStart, { passive: false });
-  colorPicker.handle.addEventListener('pointerdown', handlePickerPointerDown);
-  colorPicker.handle.addEventListener('pointermove', handlePickerPointerMove);
-  colorPicker.handle.addEventListener('pointerup', handlePickerPointerUp);
-  colorPicker.handle.addEventListener('pointercancel', handlePickerPointerCancel);
-  colorPicker.handle.addEventListener('touchstart', handlePickerTouchStart, { passive: false });
-  colorPicker.handle.addEventListener('touchmove', handlePickerTouchMove, { passive: false });
-  colorPicker.handle.addEventListener('touchend', handlePickerTouchEnd, { passive: false });
-  colorPicker.handle.addEventListener('touchcancel', handlePickerTouchCancel, { passive: false });
-  if (window.visualViewport) {
-    window.visualViewport.addEventListener('resize', resizeCanvas);
-  }
-  connectWebSocket();
-
-  // Toggle this flag above to true to enable the local test bot.
-  if (BOT_ENABLED) {
-    startBotPulse();
+    addPulse(message);
   }
 
-  // Non-obtrusive support prompt: shows after a delay every page load.
-  const coffeeCard = document.getElementById('coffee-card');
-  const coffeeButton = document.getElementById('coffee-button');
-  const coffeeClose = document.getElementById('coffee-close');
-  const COFFEE_URL = 'https://buymeacoffee.com/10000industries';
-  const COFFEE_DELAY_MS = 2 * 60 * 1000; // 2 minutes
+  function clearReconnectTimer() {
+    if (reconnectTimer !== null) {
+      root.clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  }
 
-  setTimeout(() => {
-    coffeeCard.classList.add('visible');
-  }, COFFEE_DELAY_MS);
+  function scheduleReconnect() {
+    if (connectionStopped || reconnectTimer !== null || !root.navigator.onLine) return;
+    const delay = reconnectDelay(reconnectAttempt);
+    reconnectAttempt += 1;
+    setStatus('connecting', 'reconnecting');
+    reconnectTimer = root.setTimeout(() => {
+      reconnectTimer = null;
+      connect();
+    }, delay);
+  }
 
-  coffeeButton.addEventListener('click', () => {
-    window.open(COFFEE_URL, '_blank', 'noopener,noreferrer');
-  });
+  function connect() {
+    if (connectionStopped) return;
+    if (
+      socket &&
+      (socket.readyState === root.WebSocket.CONNECTING ||
+        socket.readyState === root.WebSocket.OPEN)
+    ) {
+      return;
+    }
+    if (!/^https?:$/.test(root.location.protocol)) {
+      setStatus('offline', 'local only');
+      return;
+    }
+    if (!root.navigator.onLine) {
+      setStatus('offline', 'offline · local only');
+      return;
+    }
 
-  coffeeClose.addEventListener('click', () => {
-    coffeeCard.classList.remove('visible');
-  });
+    clearReconnectTimer();
+    presenceCount = null;
+    setStatus('connecting', reconnectAttempt > 0 ? 'reconnecting' : 'connecting');
 
-  requestAnimationFrame(animate);
-}
+    const protocol = root.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    let nextSocket;
+    try {
+      nextSocket = new root.WebSocket(`${protocol}//${root.location.host}`);
+    } catch (error) {
+      scheduleReconnect();
+      return;
+    }
+    socket = nextSocket;
 
-init();
+    nextSocket.addEventListener('open', () => {
+      if (socket !== nextSocket) return;
+      setStatus('connecting', reconnectAttempt > 0 ? 'reconnecting' : 'connecting');
+    });
+
+    nextSocket.addEventListener('message', (event) => {
+      if (socket === nextSocket) handleMessage(event);
+    });
+
+    nextSocket.addEventListener('close', () => {
+      if (socket !== nextSocket) return;
+      socket = null;
+      presenceCount = null;
+      scheduleReconnect();
+    });
+
+    nextSocket.addEventListener('error', () => {
+      if (socket !== nextSocket) return;
+      try {
+        nextSocket.close();
+      } catch (error) {
+        socket = null;
+        scheduleReconnect();
+      }
+    });
+  }
+
+  function stopConnection() {
+    connectionStopped = true;
+    clearReconnectTimer();
+    if (socket) {
+      const activeSocket = socket;
+      socket = null;
+      activeSocket.close();
+    }
+  }
+
+  function startAnimation() {
+    if (animationFrame !== null) return;
+    animationFrame = root.requestAnimationFrame(animate);
+  }
+
+  function animate(now) {
+    animationFrame = null;
+
+    context.globalCompositeOperation = 'source-over';
+    context.globalAlpha = 1;
+    context.fillStyle = '#000';
+    context.fillRect(0, 0, cssWidth, cssHeight);
+
+    const isReduced = reducedMotion.matches;
+    const radialSpeed = Math.max(250, Math.hypot(cssWidth, cssHeight) * 0.34);
+
+    context.globalCompositeOperation = isReduced ? 'source-over' : 'lighter';
+    context.lineCap = 'round';
+
+    for (let index = pulses.length - 1; index >= 0; index -= 1) {
+      const pulse = pulses[index];
+      const age = pulseAgeSeconds(pulse.createdAt, now);
+
+      if (age >= PULSE_LIFETIME_SECONDS) {
+        pulses.splice(index, 1);
+        continue;
+      }
+
+      const progress = age / PULSE_LIFETIME_SECONDS;
+      const radius = isReduced ? 18 + (progress * 8) : age * radialSpeed;
+      const alpha = pulseOpacity(age) * (isReduced ? 0.28 : 1);
+      const x = pulse.xNorm * cssWidth;
+      const y = pulse.yNorm * cssHeight;
+
+      context.globalAlpha = alpha;
+      context.strokeStyle = `rgb(${pulse.rgb.r} ${pulse.rgb.g} ${pulse.rgb.b})`;
+      context.lineWidth = isReduced ? 2 : Math.max(1.25, 3.75 - (progress * 2.25));
+      context.beginPath();
+      context.arc(x, y, radius, 0, Math.PI * 2);
+      context.stroke();
+    }
+
+    context.globalAlpha = 1;
+    context.globalCompositeOperation = 'source-over';
+    if (pulses.length > 0) startAnimation();
+  }
+
+  function initialize() {
+    colorInput.value = brightPalette[Math.floor(Math.random() * brightPalette.length)];
+    colorInput.addEventListener('input', syncPickerPosition);
+    colorInput.addEventListener('change', syncPickerPosition);
+
+    resizeCanvas();
+    root.addEventListener('resize', scheduleResize, { passive: true });
+    root.visualViewport?.addEventListener('resize', scheduleResize, { passive: true });
+
+    canvas.addEventListener('pointerdown', handleCanvasPointerDown);
+    canvas.addEventListener('keydown', handleCanvasKeyDown);
+    colorHandle.addEventListener('pointerdown', startPickerDrag);
+    root.addEventListener('pointermove', movePicker, { passive: false });
+    root.addEventListener('pointerup', (event) => finishPickerDrag(event, true));
+    root.addEventListener('pointercancel', (event) => finishPickerDrag(event, false));
+    colorHandle.addEventListener('click', (event) => {
+      if (event.detail === 0) openColorPicker();
+    });
+
+    root.addEventListener('offline', () => {
+      stopConnection();
+      setStatus('offline', 'offline · local only');
+    });
+
+    root.addEventListener('online', () => {
+      connectionStopped = false;
+      reconnectAttempt = 0;
+      connect();
+    });
+
+    root.addEventListener('pagehide', stopConnection);
+    root.addEventListener('pageshow', (event) => {
+      if (!event.persisted) return;
+      connectionStopped = false;
+      connect();
+    });
+
+    connect();
+  }
+
+  initialize();
+}(typeof globalThis !== 'undefined' ? globalThis : this));

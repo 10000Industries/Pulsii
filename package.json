@@ -1,18 +1,24 @@
 {
-  "name": "pulse",
+  "name": "pulsii",
   "version": "1.0.0",
-  "description": "Minimal real-time pulse ripple demo",
+  "description": "Ephemeral real-time shared colour pulse canvas",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "serve": "node server.js"
+    "serve": "node server.js",
+    "test": "node --test",
+    "check": "node --check server.js && node --check lib/protocol.js && node --check script.js && node --check test/server.test.js && node --check test/client-core.test.js"
+  },
+  "engines": {
+    "node": ">=22 <27"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "ws": "^8.18.3"
+    "express": "4.22.2",
+    "ws": "8.21.1"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "private": true,
+  "license": "UNLICENSED",
   "type": "commonjs"
 }
