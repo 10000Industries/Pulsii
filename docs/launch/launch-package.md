@@ -211,7 +211,13 @@ These thresholds are proposed decision rules, not industry benchmarks. Run them 
 | Invitation loop | A solo visitor will bring someone into the canvas | At least three testers say they would invite someone |
 | Social-value test | The live layer is the product | Shared sessions last at least twice as long as solo sessions |
 
-Initial technical gate: p95 remote-pulse latency below roughly 500ms, no silent disconnects, and no critical mobile-browser failure. Measuring latency requires an explicit test harness or privacy-reviewed ephemeral event timing; the restoration protocol does not calculate it.
+Initial technical gate: sample p95 remote-pulse latency below roughly 500ms, no
+silent disconnects, and no critical mobile-browser failure. The branch now
+includes `npm run review-probe -- <isolated-review-origin>`: a guarded,
+identifier-free harness that checks review-mode HTTP protections, exact-once
+relay across 20 synthetic pulses, sample p95 relay latency, and delivery after a
+receiver reconnect. It refuses the known production domains and arbitrary
+hosts. The browser-level iPad and background/foreground checks remain manual.
 
 ## Public-launch gates
 

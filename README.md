@@ -42,6 +42,19 @@ The default mode verifies that aggregate overload is safely bounded. The fanout
 mode deliberately relaxes that guard to verify exact peer-frame delivery. These
 are reproducible local checks, not a production capacity claim.
 
+After an isolated review service exists, run the guarded release probe against
+its exact generated hostname:
+
+```sh
+npm run review-probe -- https://pulsii-restoration-review-example.onrender.com
+```
+
+The probe verifies review-mode headers and assets, confirms private source stays
+unserved, checks exact-once peer delivery across 20 synthetic pulses, reports a
+sample p95 relay latency, and proves delivery after a receiver reconnects. It
+refuses `pulsii.net`, `www.pulsii.net`, `pulsii.onrender.com`, and hosts outside
+the isolated `pulsii-restoration-review*.onrender.com` pattern.
+
 ## Product contract
 
 - One server process represents one shared canvas.

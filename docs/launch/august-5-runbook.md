@@ -89,6 +89,19 @@ Run these checks:
 - Offline, background/foreground, and reconnect states remain honest.
 - Excess activity is bounded and a congested sender sees the crowded message.
 
+From the reviewed branch, run the automated probe against the exact generated
+review hostname:
+
+```sh
+npm run review-probe -- https://pulsii-restoration-review-example.onrender.com
+```
+
+Replace the example hostname with the created service URL. The probe refuses the
+known production domains and arbitrary hosts. Record its warm-up time, 20-sample
+p95 relay latency, exact-once result, and reconnect-delivery result in the PR.
+It sends only temporary synthetic pulses and stores no identifiers or pulse
+history.
+
 ## 5. Perform the iPad and motion-safety pass
 
 Use a tester who can safely review animated output. The project owner should not
