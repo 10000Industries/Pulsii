@@ -161,6 +161,11 @@ Only after review, decide:
 5. free canvas with quiet support plus paid event/private-room experiments
 6. whether `pulsii.net` should be attached to the new service
 
+Review the [preliminary name-clearance note](name-clearance.md) before deciding
+on public identity, indexing, promotion, or final launch assets. The private
+review can retain the repository name; broad promotion should not proceed until
+the official register checks and name decision are complete.
+
 If approval is given, create a new release checklist from the exact deployed
 commit. Set `PUBLIC_ORIGIN` to the verified HTTPS origin before setting
 `PUBLIC_MODE=true`; the server intentionally refuses public mode without it.

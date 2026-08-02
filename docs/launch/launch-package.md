@@ -27,7 +27,14 @@ Pulsii's distinctive territory is not collaborative drawing. It is synchronous p
 - [`pulsii.com`](https://pulsii.com/) is used by an apparel/music brand.
 - [`pulsii.com.sg`](https://pulsii.com.sg/) is an active Singapore restaurant whose language also centres on pulse, rhythm, sharing, and connection.
 
-These checks were made on 31 July 2026 and are product-risk signals, not legal or trademark clearance. Keep the repository name for restoration. Before any public launch, conduct proper trademark, domain, and handle checks and decide whether to rename or qualify the product. Do not buy anything yet.
+The preliminary name screen was expanded on 2 August 2026. The exact-name
+restaurant also uses pulse, rhythm, connection, and sharing as its brand
+territory, so the discoverability and confusion risk is now assessed as
+medium–high; UK legal conflict remains unknown. Keep the repository name for
+restoration, but do not invest in public promotion or a final identity until the
+official registers have been checked manually and the user decides whether to
+keep or rename it. See the [name-clearance note](name-clearance.md). Do not buy
+anything yet.
 
 ## First audiences
 
