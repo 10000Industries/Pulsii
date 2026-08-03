@@ -236,7 +236,9 @@ hosts. The browser-level iPad and background/foreground checks remain manual.
 - Load and congestion testing above expected concurrency
 - Motion/flashing safety review and a sufficient pause/exit mechanism
 - Mobile Safari/iPad interaction pass
-- Repository licence decision
+- Repository licence decision using the
+  [prepared decision note](licence-decision.md); the isolated review remains
+  `UNLICENSED`
 - Set a verified `PUBLIC_ORIGIN`, then intentionally set `PUBLIC_MODE=true` only
   when indexing is approved; verify the response header and `robots.txt`
 - Verify the generated absolute Open Graph, Twitter, and canonical URLs only

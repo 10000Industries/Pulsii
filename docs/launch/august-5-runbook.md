@@ -160,11 +160,17 @@ Only after review, decide:
 4. general audience not directed at children
 5. free canvas with quiet support plus paid event/private-room experiments
 6. whether `pulsii.net` should be attached to the new service
+7. repository code licence and separate treatment of brand assets, using the
+   [prepared licence decision note](licence-decision.md)
 
 Review the [preliminary name-clearance note](name-clearance.md) before deciding
 on public identity, indexing, promotion, or final launch assets. The private
 review can retain the repository name; broad promotion should not proceed until
 the official register checks and name decision are complete.
+
+The isolated review can remain `UNLICENSED`; deployment approval does not imply
+an open-source grant. Decide the longer-term licence before accepting outside
+contributions or treating the repository as open source.
 
 If approval is given, create a new release checklist from the exact deployed
 commit. Set `PUBLIC_ORIGIN` to the verified HTTPS origin before setting
