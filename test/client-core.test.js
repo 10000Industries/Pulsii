@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
+  DEFAULT_CALM_VISUALS,
   MAX_ACTIVE_PULSES,
   PULSE_LIFETIME_SECONDS,
   REDUCED_MAX_ACTIVE_PULSES,
@@ -14,6 +15,7 @@ const {
   pulseAgeSeconds,
   pulseOpacity,
   reconnectDelay,
+  shouldUseCalmVisuals,
 } = require('../script');
 
 test('normalizes a canonical browser pulse', () => {
@@ -85,6 +87,10 @@ test('bounds reconnect delay and active pulse capacity', () => {
   assert.equal(reconnectDelay(20, 1), 8000);
   assert.equal(MAX_ACTIVE_PULSES, 180);
   assert.equal(REDUCED_MAX_ACTIVE_PULSES, 36);
+  assert.equal(DEFAULT_CALM_VISUALS, true);
+  assert.equal(shouldUseCalmVisuals(true, false), true);
+  assert.equal(shouldUseCalmVisuals(false, true), true);
+  assert.equal(shouldUseCalmVisuals(false, false), false);
 });
 
 test('uses honest presence labels and a canonical invitation URL', () => {

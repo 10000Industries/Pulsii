@@ -5,6 +5,7 @@
   const MAX_PULSE_ALPHA = 0.72;
   const MAX_ACTIVE_PULSES = 180;
   const REDUCED_MAX_ACTIVE_PULSES = 36;
+  const DEFAULT_CALM_VISUALS = true;
   const RECONNECT_BASE_MS = 500;
   const RECONNECT_MAX_MS = 8000;
   const TAP_MAX_TRAVEL_PX = 12;
@@ -58,6 +59,10 @@
     return Math.max(0, (now - createdAt) / 1000);
   }
 
+  function shouldUseCalmVisuals(manualCalm, prefersReducedMotion) {
+    return Boolean(manualCalm || prefersReducedMotion);
+  }
+
   function reconnectDelay(attempt, randomValue = Math.random()) {
     const exponential = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * (2 ** Math.max(0, attempt)));
     const jitter = 0.8 + (clamp(randomValue, 0, 1) * 0.4);
@@ -91,6 +96,7 @@
 
   const core = Object.freeze({
     HEX_COLOR,
+    DEFAULT_CALM_VISUALS,
     MAX_ACTIVE_PULSES,
     PULSE_LIFETIME_SECONDS,
     REDUCED_MAX_ACTIVE_PULSES,
@@ -102,6 +108,7 @@
     pulseAgeSeconds,
     pulseOpacity,
     reconnectDelay,
+    shouldUseCalmVisuals,
   });
 
   if (typeof module !== 'undefined' && module.exports) {
@@ -119,6 +126,7 @@
   const statusText = document.getElementById('status-text');
   const colorInput = document.getElementById('color-picker');
   const colorHandle = document.getElementById('color-handle');
+  const calmButton = document.getElementById('calm-button');
   const pauseButton = document.getElementById('pause-button');
   const inviteButton = document.getElementById('invite-button');
   const aboutButton = document.getElementById('about-button');
@@ -134,6 +142,7 @@
     !statusText ||
     !colorInput ||
     !colorHandle ||
+    !calmButton ||
     !pauseButton ||
     !inviteButton ||
     !aboutButton ||
@@ -158,6 +167,7 @@
   let connectionStopped = false;
   let resizeFrame = null;
   let animationFrame = null;
+  let calmVisuals = DEFAULT_CALM_VISUALS;
   let visualsPaused = false;
   let feedbackTimer = null;
   let crowdedStatusTimer = null;
@@ -268,7 +278,7 @@
     const rgb = hexToRgb(normalized.color);
     if (!rgb) return false;
 
-    const pulseLimit = reducedMotion.matches
+    const pulseLimit = shouldUseCalmVisuals(calmVisuals, reducedMotion.matches)
       ? REDUCED_MAX_ACTIVE_PULSES
       : MAX_ACTIVE_PULSES;
     if (pulses.length >= pulseLimit) {
@@ -611,10 +621,10 @@
     context.fillRect(0, 0, cssWidth, cssHeight);
     if (visualsPaused) return;
 
-    const isReduced = reducedMotion.matches;
+    const isCalm = shouldUseCalmVisuals(calmVisuals, reducedMotion.matches);
     const radialSpeed = Math.max(250, Math.hypot(cssWidth, cssHeight) * 0.34);
 
-    context.globalCompositeOperation = isReduced ? 'source-over' : 'lighter';
+    context.globalCompositeOperation = isCalm ? 'source-over' : 'lighter';
     context.lineCap = 'round';
 
     for (let index = pulses.length - 1; index >= 0; index -= 1) {
@@ -627,14 +637,14 @@
       }
 
       const progress = age / PULSE_LIFETIME_SECONDS;
-      const radius = isReduced ? 18 + (progress * 8) : age * radialSpeed;
-      const alpha = pulseOpacity(age) * (isReduced ? 0.28 : 1);
+      const radius = isCalm ? 18 + (progress * 8) : age * radialSpeed;
+      const alpha = pulseOpacity(age) * (isCalm ? 0.28 : 1);
       const x = pulse.xNorm * cssWidth;
       const y = pulse.yNorm * cssHeight;
 
       context.globalAlpha = alpha;
       context.strokeStyle = `rgb(${pulse.rgb.r} ${pulse.rgb.g} ${pulse.rgb.b})`;
-      context.lineWidth = isReduced ? 2 : Math.max(1.25, 3.75 - (progress * 2.25));
+      context.lineWidth = isCalm ? 2 : Math.max(1.25, 3.75 - (progress * 2.25));
       context.beginPath();
       context.arc(x, y, radius, 0, Math.PI * 2);
       context.stroke();
@@ -655,6 +665,30 @@
     }, 2400);
   }
 
+  function clearPulseCanvas() {
+    pulses.length = 0;
+    if (animationFrame !== null) {
+      root.cancelAnimationFrame(animationFrame);
+      animationFrame = null;
+    }
+    context.globalAlpha = 1;
+    context.globalCompositeOperation = 'source-over';
+    context.fillStyle = '#000';
+    context.fillRect(0, 0, cssWidth, cssHeight);
+  }
+
+  function syncCalmControl(notify = false) {
+    const active = shouldUseCalmVisuals(calmVisuals, reducedMotion.matches);
+    calmButton.setAttribute('aria-pressed', String(active));
+    calmButton.textContent = active ? 'calm' : 'full';
+    calmButton.setAttribute(
+      'aria-label',
+      active ? 'Calm pulse visuals on' : 'Full pulse visuals on',
+    );
+    clearPulseCanvas();
+    if (notify) showActionFeedback(active ? 'calm visuals on' : 'full visuals on');
+  }
+
   function setVisualsPaused(paused) {
     visualsPaused = Boolean(paused);
     pauseButton.setAttribute('aria-pressed', String(visualsPaused));
@@ -664,15 +698,7 @@
       visualsPaused ? 'Resume pulse visuals' : 'Pause pulse visuals',
     );
     if (visualsPaused) {
-      pulses.length = 0;
-      if (animationFrame !== null) {
-        root.cancelAnimationFrame(animationFrame);
-        animationFrame = null;
-      }
-      context.globalAlpha = 1;
-      context.globalCompositeOperation = 'source-over';
-      context.fillStyle = '#000';
-      context.fillRect(0, 0, cssWidth, cssHeight);
+      clearPulseCanvas();
       showActionFeedback('pulse visuals paused');
     } else {
       showActionFeedback('pulse visuals resumed');
@@ -745,6 +771,7 @@
     colorInput.addEventListener('change', syncPickerPosition);
 
     resizeCanvas();
+    syncCalmControl();
     root.addEventListener('resize', scheduleResize, { passive: true });
     root.visualViewport?.addEventListener('resize', scheduleResize, { passive: true });
 
@@ -764,6 +791,15 @@
     pauseButton.addEventListener('click', () => {
       setVisualsPaused(!visualsPaused);
     });
+    calmButton.addEventListener('click', () => {
+      if (reducedMotion.matches) {
+        showActionFeedback('calm visuals follow your device setting');
+        return;
+      }
+      calmVisuals = !calmVisuals;
+      syncCalmControl(true);
+    });
+    reducedMotion.addEventListener?.('change', () => syncCalmControl(true));
     inviteButton.addEventListener('click', shareCanvas);
     aboutButton.addEventListener('click', openAboutDialog);
     aboutClose.addEventListener('click', closeAboutDialog);

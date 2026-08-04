@@ -44,6 +44,8 @@ It should not claim complete anonymity or that literally nothing is recorded wit
 - Exponential reconnect backoff
 - Honest connection count and sharing status
 - Always-available pause/resume control
+- Calm visuals enabled by default: smaller, dimmer, non-additive rings with a
+  lower active-ring cap; device reduced-motion settings keep this mode active
 - Native invitation/share control with copy fallback
 - Coalesced presence broadcasts to bound connection-churn work
 - Reduced-motion rendering for people who request it
@@ -58,6 +60,13 @@ It should not claim complete anonymity or that literally nothing is recorded wit
 - Review actual host logging and retention.
 - Re-run guarded and relaxed-fanout tests against the release candidate.
 - Test flashing and motion risk with many simultaneous users.
+- Treat calm mode as a mitigation, not proof of seizure safety or WCAG
+  conformance. Have a suitable reviewer analyse full and worst-case output;
+  warnings and a pause button are not substitutes for avoiding unsafe flashes.
+  Follow the W3C's [three-flashes-or-below-threshold
+  guidance](https://www.w3.org/WAI/WCAG22/Understanding/three-flashes-or-below-threshold)
+  and use an appropriate analysis tool or qualified review for the rendered
+  output.
 - Complete the controlled iPad, reduced-motion, and pause-control review.
 - Decide whether a single global public canvas is acceptable or rooms/moderation are required.
 - Publish a short privacy notice based on the deployed infrastructure, not only this code.

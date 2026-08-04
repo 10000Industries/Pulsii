@@ -118,10 +118,15 @@ Check on iPad Safari:
 - About dialog, pause/resume, keyboard focus, and VoiceOver labels
 - backgrounding, loss of network, and reconnection
 - reduced-motion rendering
+- calm mode starts enabled and cannot override a device reduced-motion request
 - a controlled overlap test that never exceeds the agreed safe intensity
 
 Keep the pause control continuously reachable. Stop immediately if output is
 uncomfortable or unexpectedly flash-like.
+
+Calm mode reduces intensity but is not a seizure-safety certification. Full
+visuals and worst-case overlap must be reviewed by a suitable tester; the
+project owner should not perform that exposure.
 
 ## 6. Run a controlled beta, if separately approved
 

@@ -120,6 +120,10 @@ test('serves only the explicit public surface with security headers', async (t) 
   assert.doesNotMatch(root.body, /rel="canonical"/);
   assert.doesNotMatch(root.body, /property="og:url"/);
   assert.match(root.body, /property="og:image" content="\/og-image\.png"/);
+  assert.match(
+    root.body,
+    /id="calm-button"[^>]+aria-pressed="true"[^>]*>calm<\/button>/,
+  );
 
   for (const route of EXPECTED_PUBLIC_ROUTES) {
     const response = await request(`${service.httpUrl}${route}`);

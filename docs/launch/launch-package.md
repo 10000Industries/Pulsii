@@ -69,6 +69,7 @@ The canvas now includes:
 
 - native invite/share with copied-link fallback
 - an always-available pause/resume control
+- calm visuals enabled by default, with smaller, dimmer, non-additive pulses
 - a small About/privacy panel with support and source/feedback links
 - an honest crowded notice when aggregate protection drops a pulse
 - reduced-motion rendering and safe-area-aware mobile controls

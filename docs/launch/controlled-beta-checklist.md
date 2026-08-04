@@ -22,11 +22,14 @@ individual histories.
 - Warm the free service and wait for `/healthz` to respond.
 - Confirm crawling remains disabled.
 - Open one iPad Safari client and one second-browser client.
-- Confirm pause, reduced motion, share/copy, About, and reconnect behaviour.
+- Confirm calm mode starts enabled; then confirm pause, device reduced motion,
+  share/copy, About, and reconnect behaviour.
 - Tell invitees it is one public shared canvas, not a private room.
 - Tell invitees that pulses are visual, fade, and have no canvas history.
 - Provide a stop time and a route for private feedback.
 - Do not invite anyone who has not agreed to view animated output.
+- Keep calm mode on for the first group session. Do not use full visuals in a
+  group until a separate qualified motion/flashing review passes.
 
 ## Facilitator observations
 

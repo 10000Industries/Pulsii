@@ -67,7 +67,9 @@ Complete this record from the created review service:
 - Reconnection state is visible and recovers.
 - Touch creation and colour selection work at an iPad viewport.
 - Pause/resume, native share, copied-link fallback, and the About dialog work.
-- Reduced-motion mode produces a small, faint response rather than a large expanding ring.
+- Calm mode starts enabled and produces a small, faint, non-additive response
+  rather than a large expanding ring; device reduced-motion settings keep calm
+  mode active.
 - No third-party request occurs during ordinary canvas use.
 - Operational log events contain only aggregate counters and no pulse content,
   IP address, user agent, or identifier.
