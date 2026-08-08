@@ -3,13 +3,17 @@
 const path = require('node:path');
 const http = require('node:http');
 const fs = require('node:fs');
+const { randomBytes } = require('node:crypto');
 const express = require('express');
 const { WebSocket, WebSocketServer } = require('ws');
 const {
+  BATCH_HEADER_BYTES,
+  MAX_BATCH_PULSES,
+  PULSE_RECORD_BYTES,
+  encodePulseBatch,
   parsePulseMessage,
-  serializeCongestion,
+  serializeBusy,
   serializePresence,
-  serializePulse,
 } = require('./lib/protocol');
 
 const DEFAULT_HOST = '0.0.0.0';
@@ -19,12 +23,16 @@ const DEFAULT_MAX_BUFFERED_BYTES = 64 * 1024;
 const DEFAULT_MAX_CONNECTIONS = 200;
 const DEFAULT_CLIENT_RATE_BURST = 10;
 const DEFAULT_CLIENT_RATE_PER_SECOND = 5;
-const DEFAULT_GLOBAL_RATE_BURST = 36;
-const DEFAULT_GLOBAL_RATE_PER_SECOND = 24;
+const DEFAULT_BATCH_INTERVAL_MS = 50;
+const DEFAULT_MAX_GLOBAL_CANDIDATES = 8192;
+const DEFAULT_MAX_CLIENT_CANDIDATES = 8;
+const DEFAULT_MAX_BATCH_PULSES = 4096;
+const DEFAULT_BUSY_RETRY_MS = 100;
+const DEFAULT_SHUTDOWN_DRAIN_MS = 250;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
 const DEFAULT_PRESENCE_BROADCAST_DELAY_MS = 100;
 const DEFAULT_METRICS_INTERVAL_MS = 60_000;
-const CONGESTION_NOTICE_INTERVAL_MS = 1000;
+const WEBSOCKET_PATH = '/live';
 
 const PUBLIC_ASSETS = Object.freeze({
   '/': 'index.html',
@@ -35,6 +43,9 @@ const PUBLIC_ASSETS = Object.freeze({
   '/favicon.png': 'favicon.png',
   '/manifest.webmanifest': 'manifest.webmanifest',
   '/og-image.png': 'og-image.png',
+  '/privacy': 'privacy.html',
+  '/privacy.html': 'privacy.html',
+  '/privacy.css': 'privacy.css',
 });
 
 const SECURITY_HEADERS = Object.freeze({
@@ -57,9 +68,9 @@ const SECURITY_HEADERS = Object.freeze({
   'X-Frame-Options': 'DENY',
 });
 
-function isSameOriginWebSocket(info) {
+function isSameOriginWebSocket(info, requireOrigin = false) {
   const origin = info.origin;
-  if (!origin) return true;
+  if (!origin) return !requireOrigin;
 
   try {
     const forwardedProtocol = info.req.headers['x-forwarded-proto']
@@ -132,6 +143,14 @@ function parsePositiveInteger(rawValue, name, fallback) {
   return value;
 }
 
+function parseBoundedPositiveInteger(rawValue, name, fallback, maximum) {
+  const value = parsePositiveInteger(rawValue, name, fallback);
+  if (value > maximum) {
+    throw new Error(`Invalid ${name}: ${rawValue}`);
+  }
+  return value;
+}
+
 function parsePublicOrigin(rawValue) {
   if (rawValue === undefined || rawValue === null || rawValue === '') {
     return null;
@@ -197,15 +216,36 @@ function runtimeOptionsFromEnv(environment = process.env) {
       'CLIENT_RATE_PER_SECOND',
       DEFAULT_CLIENT_RATE_PER_SECOND,
     ),
-    globalRateBurst: parsePositiveInteger(
-      environment.GLOBAL_RATE_BURST,
-      'GLOBAL_RATE_BURST',
-      DEFAULT_GLOBAL_RATE_BURST,
+    batchIntervalMs: parsePositiveInteger(
+      environment.BATCH_INTERVAL_MS,
+      'BATCH_INTERVAL_MS',
+      DEFAULT_BATCH_INTERVAL_MS,
     ),
-    globalRatePerSecond: parsePositiveNumber(
-      environment.GLOBAL_RATE_PER_SECOND,
-      'GLOBAL_RATE_PER_SECOND',
-      DEFAULT_GLOBAL_RATE_PER_SECOND,
+    maxGlobalCandidates: parsePositiveInteger(
+      environment.MAX_GLOBAL_CANDIDATES,
+      'MAX_GLOBAL_CANDIDATES',
+      DEFAULT_MAX_GLOBAL_CANDIDATES,
+    ),
+    maxClientCandidates: parsePositiveInteger(
+      environment.MAX_CLIENT_CANDIDATES,
+      'MAX_CLIENT_CANDIDATES',
+      DEFAULT_MAX_CLIENT_CANDIDATES,
+    ),
+    maxBatchPulses: parseBoundedPositiveInteger(
+      environment.MAX_BATCH_PULSES,
+      'MAX_BATCH_PULSES',
+      DEFAULT_MAX_BATCH_PULSES,
+      MAX_BATCH_PULSES,
+    ),
+    busyRetryMs: parsePositiveInteger(
+      environment.BUSY_RETRY_MS,
+      'BUSY_RETRY_MS',
+      DEFAULT_BUSY_RETRY_MS,
+    ),
+    shutdownDrainMs: parsePositiveInteger(
+      environment.SHUTDOWN_DRAIN_MS,
+      'SHUTDOWN_DRAIN_MS',
+      DEFAULT_SHUTDOWN_DRAIN_MS,
     ),
     metricsIntervalMs: parsePositiveInteger(
       environment.METRICS_INTERVAL_MS,
@@ -227,14 +267,19 @@ function createPulsiiServer(options = {}) {
     maxConnections = DEFAULT_MAX_CONNECTIONS,
     clientRateBurst = DEFAULT_CLIENT_RATE_BURST,
     clientRatePerSecond = DEFAULT_CLIENT_RATE_PER_SECOND,
-    globalRateBurst = DEFAULT_GLOBAL_RATE_BURST,
-    globalRatePerSecond = DEFAULT_GLOBAL_RATE_PER_SECOND,
+    batchIntervalMs = DEFAULT_BATCH_INTERVAL_MS,
+    maxGlobalCandidates = DEFAULT_MAX_GLOBAL_CANDIDATES,
+    maxClientCandidates = DEFAULT_MAX_CLIENT_CANDIDATES,
+    maxBatchPulses = DEFAULT_MAX_BATCH_PULSES,
+    busyRetryMs = DEFAULT_BUSY_RETRY_MS,
+    shutdownDrainMs = DEFAULT_SHUTDOWN_DRAIN_MS,
     heartbeatIntervalMs = DEFAULT_HEARTBEAT_INTERVAL_MS,
     presenceBroadcastDelayMs = DEFAULT_PRESENCE_BROADCAST_DELAY_MS,
     metricsIntervalMs = DEFAULT_METRICS_INTERVAL_MS,
     publicMode = false,
     publicOrigin = null,
     deployedCommit = 'unknown',
+    processEpoch = randomBytes(4).readUInt32BE(0),
     logger = null,
     now = Date.now,
   } = options;
@@ -244,6 +289,37 @@ function createPulsiiServer(options = {}) {
   const normalizedPublicOrigin = parsePublicOrigin(publicOrigin);
   if (Boolean(publicMode) !== Boolean(normalizedPublicOrigin)) {
     throw new Error('PUBLIC_MODE and PUBLIC_ORIGIN must be configured together');
+  }
+  for (const [name, value, maximum] of [
+    ['maxConnections', maxConnections, Number.MAX_SAFE_INTEGER],
+    ['batchIntervalMs', batchIntervalMs, Number.MAX_SAFE_INTEGER],
+    ['maxGlobalCandidates', maxGlobalCandidates, Number.MAX_SAFE_INTEGER],
+    ['maxClientCandidates', maxClientCandidates, Number.MAX_SAFE_INTEGER],
+    ['maxBatchPulses', maxBatchPulses, MAX_BATCH_PULSES],
+    ['busyRetryMs', busyRetryMs, Number.MAX_SAFE_INTEGER],
+    ['shutdownDrainMs', shutdownDrainMs, Number.MAX_SAFE_INTEGER],
+  ]) {
+    if (!Number.isInteger(value) || value <= 0 || value > maximum) {
+      throw new Error(`Invalid ${name}: ${value}`);
+    }
+  }
+  if (maxGlobalCandidates < maxConnections) {
+    throw new Error(
+      'maxGlobalCandidates must be at least maxConnections for fair admission',
+    );
+  }
+  if (
+    !Number.isInteger(processEpoch) ||
+    processEpoch < 0 ||
+    processEpoch > 0xffffffff
+  ) {
+    throw new Error(`Invalid processEpoch: ${processEpoch}`);
+  }
+  if (
+    BATCH_HEADER_BYTES + (maxBatchPulses * PULSE_RECORD_BYTES) >
+    maxBufferedBytes
+  ) {
+    throw new Error('maxBatchPulses exceeds the per-client buffer ceiling');
   }
   const indexHtml = renderIndexHtml(
     fs.readFileSync(path.resolve(publicDir, 'index.html'), 'utf8'),
@@ -268,21 +344,26 @@ function createPulsiiServer(options = {}) {
     connectionsActivated: 0,
     connectionsClosed: 0,
     capacityRejected: 0,
+    pulseCandidates: 0,
     pulsesAccepted: 0,
-    pulsesShared: 0,
+    pulsesRejectedBusy: 0,
     invalidMessages: 0,
     clientRateLimited: 0,
-    globalRateDropped: 0,
     slowClientTerminations: 0,
-    fanoutDeliveries: 0,
+    batchesShared: 0,
+    batchDeliveryAttempts: 0,
+    batchDeliveries: 0,
+    pulseDeliveryAttempts: 0,
+    pulseDeliveries: 0,
+    pulseWireBytesAttempted: 0,
+    pulseWireBytes: 0,
+    candidateQueuePeak: 0,
     peakConnections: 0,
     totalConnectionMs: 0,
   };
-  const takeGlobalRateToken = createTokenBucket(
-    globalRateBurst,
-    globalRatePerSecond,
-    now,
-  );
+  let candidateQueueDepth = 0;
+  let connectedSourcesWithCandidates = 0;
+  let isShuttingDown = false;
 
   function metricsSnapshot() {
     const memory = process.memoryUsage();
@@ -296,13 +377,21 @@ function createPulsiiServer(options = {}) {
       connectionsActivated: metrics.connectionsActivated,
       connectionsClosed: metrics.connectionsClosed,
       capacityRejected: metrics.capacityRejected,
+      pulseCandidates: metrics.pulseCandidates,
       pulsesAccepted: metrics.pulsesAccepted,
-      pulsesShared: metrics.pulsesShared,
+      pulsesRejectedBusy: metrics.pulsesRejectedBusy,
       invalidMessages: metrics.invalidMessages,
       clientRateLimited: metrics.clientRateLimited,
-      globalRateDropped: metrics.globalRateDropped,
       slowClientTerminations: metrics.slowClientTerminations,
-      fanoutDeliveries: metrics.fanoutDeliveries,
+      batchesShared: metrics.batchesShared,
+      batchDeliveryAttempts: metrics.batchDeliveryAttempts,
+      batchDeliveries: metrics.batchDeliveries,
+      pulseDeliveryAttempts: metrics.pulseDeliveryAttempts,
+      pulseDeliveries: metrics.pulseDeliveries,
+      pulseWireBytesAttempted: metrics.pulseWireBytesAttempted,
+      pulseWireBytes: metrics.pulseWireBytes,
+      candidateQueueDepth,
+      candidateQueuePeak: metrics.candidateQueuePeak,
       averageConnectionSeconds:
         metrics.connectionsClosed === 0
           ? 0
@@ -344,7 +433,7 @@ function createPulsiiServer(options = {}) {
       const maxAge =
         filename === 'manifest.webmanifest' ||
         filename === 'script.js' ||
-        filename === 'style.css'
+        filename.endsWith('.css')
           ? 0
           : 60 * 60 * 1000;
       response.sendFile(
@@ -365,28 +454,46 @@ function createPulsiiServer(options = {}) {
   const wss = new WebSocketServer({
     clientTracking: true,
     maxPayload: maxPayloadBytes,
+    path: WEBSOCKET_PATH,
     perMessageDeflate: false,
     server,
-    verifyClient: isSameOriginWebSocket,
+    verifyClient: (info) => isSameOriginWebSocket(info, publicMode),
   });
 
   function reportError(error) {
     if (logger && typeof logger.error === 'function') {
-      logger.error(error);
+      const candidateCode =
+        error && typeof error.code === 'string' ? error.code : 'UNKNOWN';
+      const code = /^[a-z0-9_-]{1,64}$/i.test(candidateCode)
+        ? candidateCode
+        : 'UNKNOWN';
+      logger.error(JSON.stringify({
+        event: 'pulsii_runtime_error',
+        code,
+      }));
     }
   }
 
-  function send(client, payload) {
+  function send(
+    client,
+    payload,
+    options = undefined,
+    onDelivered = null,
+  ) {
     if (client.readyState !== WebSocket.OPEN) return false;
-    if (client.bufferedAmount > maxBufferedBytes) {
+    const payloadBytes = Buffer.byteLength(payload);
+    if (client.bufferedAmount + payloadBytes > maxBufferedBytes) {
       metrics.slowClientTerminations += 1;
       client.terminate();
       return false;
     }
 
     try {
-      client.send(payload, (error) => {
-        if (!error) return;
+      client.send(payload, options, (error) => {
+        if (!error) {
+          onDelivered?.();
+          return;
+        }
         reportError(error);
         client.terminate();
       });
@@ -401,13 +508,91 @@ function createPulsiiServer(options = {}) {
   function broadcast(payload, excludedClient = null) {
     let deliveries = 0;
     for (const client of wss.clients) {
-      if (client === excludedClient || client.readyState !== WebSocket.OPEN) {
+      if (
+        client === excludedClient ||
+        client.readyState !== WebSocket.OPEN ||
+        !client.pulsiiConnected
+      ) {
         continue;
       }
       if (send(client, payload)) deliveries += 1;
     }
     return deliveries;
   }
+
+  const readyCandidateSources = new Set();
+  let batchSequence = 0;
+
+  function nextBatchSequence() {
+    batchSequence = batchSequence >= 0xffffffff ? 1 : batchSequence + 1;
+    return batchSequence;
+  }
+
+  function takeFairPulseBatch() {
+    const pulses = [];
+
+    while (
+      pulses.length < maxBatchPulses &&
+      readyCandidateSources.size > 0
+    ) {
+      const roundSources = Array.from(readyCandidateSources);
+      for (const source of roundSources) {
+        if (pulses.length >= maxBatchPulses) break;
+        readyCandidateSources.delete(source);
+
+        const pulse = source.pulseCandidates.shift();
+        if (!pulse) continue;
+        candidateQueueDepth -= 1;
+        pulses.push(pulse);
+
+        if (source.pulseCandidates.length > 0) {
+          readyCandidateSources.add(source);
+        } else if (source.hasCandidateReservation) {
+          source.hasCandidateReservation = false;
+          connectedSourcesWithCandidates = Math.max(
+            0,
+            connectedSourcesWithCandidates - 1,
+          );
+        }
+      }
+    }
+
+    return pulses;
+  }
+
+  function flushPulseBatch() {
+    const pulses = takeFairPulseBatch();
+    if (pulses.length === 0) return null;
+
+    const payload = encodePulseBatch({
+      processEpoch,
+      sequence: nextBatchSequence(),
+      serverTimeMs: Math.max(0, Math.trunc(now())),
+      pulses,
+    });
+    let deliveryAttempts = 0;
+    for (const client of wss.clients) {
+      if (
+        client.readyState !== WebSocket.OPEN ||
+        !client.pulsiiConnected
+      ) continue;
+      if (!send(client, payload, { binary: true }, () => {
+        metrics.batchDeliveries += 1;
+        metrics.pulseDeliveries += pulses.length;
+        metrics.pulseWireBytes += payload.length;
+      })) continue;
+      deliveryAttempts += 1;
+      metrics.batchDeliveryAttempts += 1;
+      metrics.pulseDeliveryAttempts += pulses.length;
+      metrics.pulseWireBytesAttempted += payload.length;
+    }
+
+    metrics.batchesShared += 1;
+    return { deliveryAttempts, payload, pulses };
+  }
+
+  const pulseBatchTimer = setInterval(flushPulseBatch, batchIntervalMs);
+  pulseBatchTimer.unref();
 
   let presenceBroadcastTimer = null;
   function broadcastPresence() {
@@ -426,6 +611,7 @@ function createPulsiiServer(options = {}) {
   wss.on('connection', (socket) => {
     if (presenceCount >= maxConnections) {
       metrics.capacityRejected += 1;
+      socket.pulsiiConnected = false;
       socket.close(1013, 'Server at capacity');
       return;
     }
@@ -439,7 +625,9 @@ function createPulsiiServer(options = {}) {
     socket.isAlive = true;
     socket.connectedAt = now();
     socket.activated = false;
-    socket.lastCongestionNoticeAt = 0;
+    socket.hasCandidateReservation = false;
+    socket.pulsiiConnected = true;
+    socket.pulseCandidates = [];
     const takeClientRateToken = createTokenBucket(
       clientRateBurst,
       clientRatePerSecond,
@@ -467,29 +655,56 @@ function createPulsiiServer(options = {}) {
         return;
       }
 
-      if (!takeGlobalRateToken()) {
-        metrics.globalRateDropped += 1;
-        const currentTime = now();
-        if (
-          currentTime - socket.lastCongestionNoticeAt >=
-          CONGESTION_NOTICE_INTERVAL_MS
-        ) {
-          socket.lastCongestionNoticeAt = currentTime;
-          send(socket, serializeCongestion());
-        }
+      metrics.pulseCandidates += 1;
+      const emptyConnectedSources = Math.max(
+        0,
+        presenceCount - connectedSourcesWithCandidates,
+      );
+      const reservedForOtherSources =
+        maxGlobalCandidates >= presenceCount
+          ? Math.max(
+            0,
+            emptyConnectedSources -
+              (socket.hasCandidateReservation ? 0 : 1),
+          )
+          : 0;
+      if (
+        isShuttingDown ||
+        socket.pulseCandidates.length >= maxClientCandidates ||
+        candidateQueueDepth >=
+          maxGlobalCandidates - reservedForOtherSources
+      ) {
+        metrics.pulsesRejectedBusy += 1;
+        const queuedBatches = Math.max(
+          1,
+          Math.ceil(candidateQueueDepth / maxBatchPulses),
+        );
+        send(
+          socket,
+          serializeBusy(Math.max(
+            busyRetryMs,
+            queuedBatches * batchIntervalMs,
+          )),
+        );
         return;
       }
 
       metrics.pulsesAccepted += 1;
+      socket.pulseCandidates.push(pulse);
+      if (!socket.hasCandidateReservation) {
+        socket.hasCandidateReservation = true;
+        connectedSourcesWithCandidates += 1;
+      }
+      candidateQueueDepth += 1;
+      metrics.candidateQueuePeak = Math.max(
+        metrics.candidateQueuePeak,
+        candidateQueueDepth,
+      );
+      readyCandidateSources.add(socket);
       if (!socket.activated) {
         socket.activated = true;
         metrics.connectionsActivated += 1;
       }
-
-      // The sender renders immediately; only peers need the relayed event.
-      const deliveries = broadcast(serializePulse(pulse), socket);
-      metrics.fanoutDeliveries += deliveries;
-      if (deliveries > 0) metrics.pulsesShared += 1;
     });
 
     socket.on('error', reportError);
@@ -498,6 +713,14 @@ function createPulsiiServer(options = {}) {
     socket.on('close', () => {
       if (connectionClosed) return;
       connectionClosed = true;
+      socket.pulsiiConnected = false;
+      if (socket.hasCandidateReservation) {
+        socket.hasCandidateReservation = false;
+        connectedSourcesWithCandidates = Math.max(
+          0,
+          connectedSourcesWithCandidates - 1,
+        );
+      }
       presenceCount = Math.max(0, presenceCount - 1);
       metrics.connectionsClosed += 1;
       metrics.totalConnectionMs += Math.max(0, now() - socket.connectedAt);
@@ -571,19 +794,14 @@ function createPulsiiServer(options = {}) {
   function close() {
     if (closePromise) return closePromise;
 
+    isShuttingDown = true;
     clearInterval(heartbeatTimer);
+    clearInterval(pulseBatchTimer);
     if (metricsTimer) clearInterval(metricsTimer);
     if (presenceBroadcastTimer !== null) {
       clearTimeout(presenceBroadcastTimer);
       presenceBroadcastTimer = null;
     }
-
-    const webSocketClosed = new Promise((resolve) => {
-      wss.close(resolve);
-      for (const client of wss.clients) {
-        client.terminate();
-      }
-    });
 
     const httpClosed = server.listening
       ? new Promise((resolve, reject) => {
@@ -594,15 +812,42 @@ function createPulsiiServer(options = {}) {
         })
       : Promise.resolve();
 
-    closePromise = Promise.all([webSocketClosed, httpClosed]).then(
-      () => undefined,
-    );
+    closePromise = (async () => {
+      const webSocketClosed = new Promise((resolve) => {
+        wss.close(resolve);
+      });
+
+      // An accepted pulse is irrevocable. Queue every accepted candidate for
+      // delivery before adding the restart close frame behind those batches.
+      while (candidateQueueDepth > 0) flushPulseBatch();
+
+      for (const client of wss.clients) {
+        if (client.readyState === WebSocket.OPEN) {
+          client.close(1012, 'Service restarting');
+        }
+      }
+
+      let drainTimer;
+      const drainExpired = new Promise((resolve) => {
+        drainTimer = setTimeout(resolve, shutdownDrainMs);
+        drainTimer.unref?.();
+      });
+      await Promise.race([webSocketClosed, drainExpired]);
+      clearTimeout(drainTimer);
+
+      for (const client of wss.clients) {
+        if (client.readyState !== WebSocket.CLOSED) client.terminate();
+      }
+
+      await Promise.all([webSocketClosed, httpClosed]);
+    })();
     return closePromise;
   }
 
   return {
     app,
     close,
+    flushPulseBatch,
     getMetrics: metricsSnapshot,
     getPresenceCount: () => presenceCount,
     listen,
@@ -650,9 +895,12 @@ if (require.main === module) {
 module.exports = {
   PUBLIC_ASSETS,
   SECURITY_HEADERS,
+  WEBSOCKET_PATH,
   createTokenBucket,
   createPulsiiServer,
+  isSameOriginWebSocket,
   parseBooleanFlag,
+  parseBoundedPositiveInteger,
   parsePort,
   parsePublicOrigin,
   renderIndexHtml,

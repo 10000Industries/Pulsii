@@ -19,7 +19,13 @@ services:
         value: "10"
       - key: CLIENT_RATE_PER_SECOND
         value: "5"
-      - key: GLOBAL_RATE_BURST
-        value: "36"
-      - key: GLOBAL_RATE_PER_SECOND
-        value: "24"
+      - key: BATCH_INTERVAL_MS
+        value: "50"
+      - key: MAX_GLOBAL_CANDIDATES
+        value: "512"
+      - key: MAX_CLIENT_CANDIDATES
+        value: "8"
+      - key: MAX_BATCH_PULSES
+        value: "512"
+      - key: BUSY_RETRY_MS
+        value: "100"

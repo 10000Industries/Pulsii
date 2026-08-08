@@ -1,7 +1,7 @@
 # Pulsii
 
-Pulsii is one live public canvas. Choose a colour and tap: one expanding ring
-appears immediately for you and is relayed to everyone else currently
+Pulsii is one live public canvas. Choose a colour and tap: once the shared
+relay accepts it, one pulse appears for you and everyone else currently
 connected. Pulses fade, and the canvas keeps no history.
 
 This repository is intentionally small: a vanilla browser client, an Express
@@ -11,7 +11,7 @@ application.
 
 ## Run locally
 
-Pulsii requires a current Node.js LTS release.
+Pulsii is pinned to Node.js 24.14.0.
 
 ```sh
 npm ci
@@ -29,7 +29,10 @@ npm test
 npm run check
 ```
 
-The tests cover the public-file boundary, health endpoint, pulse validation, presence, rate limiting, and peer delivery without echoing a sender's locally drawn pulse.
+The tests cover the public-file boundary, health endpoint, pulse validation,
+presence, rate limiting, fair admission, binary batch encoding, sender echo,
+restart draining, and exact-once delivery to each healthy test socket that
+remains connected through the batch.
 
 Two local load-test modes exercise the real WebSocket server:
 
@@ -38,9 +41,12 @@ npm run load-test
 npm run load-test:fanout
 ```
 
-The default mode verifies that aggregate overload is safely bounded. The fanout
-mode deliberately relaxes that guard to verify exact peer-frame delivery. These
-are reproducible local checks, not a production capacity claim.
+Both commands exercise the current batched relay; the second is retained as a
+compatibility alias. Environment variables such as `LOAD_CLIENTS`,
+`LOAD_PULSES_PER_CLIENT`, and `LOAD_MAX_BATCH_PULSES` control the run. Every
+accepted pulse contribution must reach every continuously connected client, and the harness reports
+batch count, wire bytes, queue depth, and delivery time. These are reproducible
+local checks, not a production capacity claim.
 
 After an isolated review service exists, run the guarded release probe against
 its exact generated hostname:
@@ -59,10 +65,21 @@ the isolated `pulsii-restoration-review*.onrender.com` pattern.
 
 - One server process represents one shared canvas.
 - Pulse coordinates are normalized so the same event maps across screen sizes.
-- The sender draws immediately; the server relays one canonical pulse to peers only.
-- Pulse messages are strictly validated and rate-limited.
-- A server-wide token bucket bounds total accepted pulse traffic and fanout.
-- Active rings are capped client-side to protect rendering under congestion, with a lower cap for reduced-motion users.
+- A live sender waits for the relay's echo; accepted pulses therefore appear
+  exactly once on each healthy canvas that remains connected through the
+  batch, including the sender. Disconnected taps are labelled not shared and
+  are not rendered. Pulsii has no replay history for a connection that drops.
+- Incoming pulse candidates are strictly validated and rate-limited.
+- A bounded, per-connection fair queue rejects overload before acceptance and
+  tells the sender when a pulse was not shared. Accepted pulses are never
+  silently discarded.
+- The relay sends compact binary batches every 50 ms instead of one JSON frame
+  per pulse per recipient.
+- The client retains every accepted pulse for its visual lifetime and renders
+  batches in one WebGL2 instanced draw call, with a Canvas2D fallback.
+- Dense crowds automatically switch to small static halos. Brightness uses a
+  non-additive ceiling in every visual profile, and reduced-motion remains
+  static.
 - The server does not persist pulse events or user profiles.
 - A subtle presence indicator reports the real connection state; activity is
   never simulated, and a solo connection is labelled honestly.
@@ -71,9 +88,11 @@ the isolated `pulsii-restoration-review*.onrender.com` pattern.
   displaying local or remote pulse visuals.
 - A small About dialog explains public scope, privacy limits, support, and
   feedback.
-- `prefers-reduced-motion` keeps pulses small, faint, and non-additive.
+- `prefers-reduced-motion` keeps pulses small, faint, and static.
 - One-minute operational counters record only aggregates such as connections,
-  accepted pulses, overload drops, fanout, memory, and duration. They do not
+  pulse candidates, accepted and busy-rejected pulses, socket-write attempts
+  and completions, attempted and completed wire bytes, queue depth, memory,
+  and duration. They do not
   include IP addresses, user agents, coordinates, colours, or stable
   identifiers.
 - Preview crawling is disabled by default and its social metadata remains

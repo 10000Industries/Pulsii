@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#000000">
+  <meta name="robots" content="noindex">
+  <title>Privacy — Pulsii</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="stylesheet" href="/privacy.css">
+</head>
+<body>
+  <main>
+    <a class="back" href="/">← canvas</a>
+    <h1>Pulsii privacy</h1>
+    <p class="updated">Review notice · updated 8 August 2026</p>
+
+    <p>Pulsii is one public live canvas presented as a 10000 Industries project. It is not a private room. The legal controller identity and a private privacy-contact route must be confirmed before broad public promotion.</p>
+
+    <h2>What Pulsii receives</h2>
+    <p>Your browser sends a temporary pulse colour and position when you tap. The application validates it, holds an accepted pulse only in a bounded in-process queue until the next live batch, and relays that batch to healthy connections that remain online for delivery. The browser keeps a pulse only for its short visual lifetime. The application does not write pulse events to a database, create a canvas history, or replay missed batches after a connection drops.</p>
+    <p>The hosting provider may process ordinary operational connection and error data, which can include an IP address, request time, browser headers, and technical error details. The Pulsii application itself emits fixed technical error codes and aggregate counters such as connection totals, pulse totals, queue rejections, memory use, socket-write attempts and completions, and attempted and completed application-payload bytes. Those application log fields do not include pulse positions, colours, names, account identifiers, or stable user identifiers. Exact provider log fields, access, and retention still need to be verified.</p>
+
+    <h2>What is not used</h2>
+    <p>There are no Pulsii accounts, profiles, names, messages, cookies, advertising trackers, browser storage identifiers, or user-level analytics. Ordinary canvas use makes no third-party browser request.</p>
+
+    <h2>Why this information is processed</h2>
+    <p>During review, temporary pulse data is used only to provide the live shared canvas, while necessary operational data is used to keep the service secure, reliable, and within technical and financial limits. The operator must document and approve the applicable data-protection roles, lawful basis, and any required assessment before broad public promotion.</p>
+
+    <h2>Hosting and retention</h2>
+    <p>The review blueprint uses Render and requests its Frankfurt region. Application pulse data is not persisted, and process-level aggregate counters reset when the service restarts. The operator must inspect the actual review and production services and verify region, provider roles, log categories, access, international transfers, and retention before approving a final public notice.</p>
+
+    <h2>Your choices and rights</h2>
+    <p>You can stop sharing by closing the page. Depending on the confirmed controller and applicable law, you may have rights to ask about, object to, restrict, erase, or obtain personal information and to complain to the relevant supervisory authority. Because Pulsii has no accounts or stable identifiers, the operator may be unable to connect an operational record to a particular visitor without additional information.</p>
+
+    <h2>Contact</h2>
+    <p>The project source and general feedback route are at <a href="https://github.com/10000Industries/Pulsii" rel="noopener noreferrer">github.com/10000Industries/Pulsii</a>. GitHub activity may be public, so do not post private information there. A named controller and private privacy-contact route are still required before broad promotion.</p>
+
+    <p class="note">This is a review-stage notice, not a final production notice. Broad promotion remains blocked until the controller and private contact details, legal assessment, and deployed host settings are confirmed.</p>
+  </main>
+</body>
+</html>

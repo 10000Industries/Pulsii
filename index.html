@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#000000">
-  <meta name="description" content="One public canvas, shared live. Tap and everyone here sees a fading pulse of colour.">
+  <meta name="description" content="One public canvas, shared live. Tap to send a fading pulse of colour across it.">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Pulsii">
   <meta property="og:title" content="Pulsii">
-  <meta property="og:description" content="One shared moment. Tap and everyone here sees a fading pulse of colour.">
+  <meta property="og:description" content="One shared moment. Tap to send a fading pulse of colour across the live canvas.">
   <meta property="og:type" content="website">
   <!-- PULSII_PUBLIC_META -->
   <meta property="og:image" content="/og-image.png">
@@ -18,8 +18,9 @@
   <meta property="og:image:alt" content="Overlapping coloured pulse rings on a black canvas">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Pulsii">
-  <meta name="twitter:description" content="One shared moment. Tap and everyone here sees a fading pulse of colour.">
+  <meta name="twitter:description" content="One shared moment. Tap to send a fading pulse of colour across the live canvas.">
   <meta name="twitter:image" content="/og-image.png">
+  <meta name="twitter:image:alt" content="Overlapping coloured pulse rings on a black canvas">
   <title>Pulsii — one shared moment</title>
   <link rel="icon" href="/favicon.ico" sizes="any">
   <link rel="apple-touch-icon" href="/favicon.png">
@@ -28,23 +29,23 @@
 </head>
 <body>
   <main id="stage" aria-label="Pulsii shared canvas">
-    <canvas id="canvas" tabindex="0" aria-label="Tap anywhere, or press Enter, to send a coloured pulse">
+    <canvas id="canvas" role="button" tabindex="0" aria-label="Tap anywhere, or press Enter, to send a coloured pulse">
       Pulsii is a visual shared canvas. Use the controls after the canvas to pause visuals, invite someone, or read about the experience.
     </canvas>
 
     <section id="intro" aria-labelledby="intro-title">
       <h1 id="intro-title">Pulsii</h1>
-      <p>tap anywhere.<br>everyone here sees the pulse.</p>
+      <p>tap anywhere.<br>accepted pulses cross the live canvas.</p>
       <p class="ephemeral">one public canvas, shared live.<br>pulses fade. the canvas keeps no history.</p>
     </section>
 
     <div id="presence-controls">
-      <div id="connection-status" data-state="connecting" role="status" aria-live="polite">
+      <div id="connection-status" data-state="connecting" aria-live="off">
         <span class="status-dot" aria-hidden="true"></span>
         <span id="status-text">connecting</span>
       </div>
       <div id="live-actions" aria-label="Canvas controls">
-        <button id="calm-button" class="quiet-control" type="button" aria-pressed="true" aria-label="Calm pulse visuals on">calm</button>
+        <button id="calm-button" class="quiet-control" type="button" aria-pressed="true" aria-label="Toggle calm pulse visuals" aria-describedby="visual-profile-status">calm</button>
         <button id="pause-button" class="quiet-control" type="button" aria-pressed="false">pause</button>
         <button id="invite-button" class="quiet-control" type="button" disabled>invite</button>
         <button id="about-button" class="quiet-control" type="button" aria-haspopup="dialog">about</button>
@@ -52,19 +53,23 @@
     </div>
 
     <div id="action-feedback" role="status" aria-live="polite"></div>
+    <div id="connection-announcer" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
+    <div id="pulse-activity" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
+    <div id="visual-profile-status" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">Calm pulse visuals are on.</div>
 
-    <input id="color-picker" type="color" value="#00d4ff" tabindex="-1" aria-hidden="true">
+    <input id="color-picker" type="color" value="#00d4ff" tabindex="-1" aria-label="Pulse colour">
     <button id="color-handle" type="button" aria-label="Choose pulse colour"></button>
+    <span id="color-hint" aria-hidden="true">colour · tap or drag</span>
 
     <dialog id="about-dialog" aria-labelledby="about-title">
       <button id="about-close" type="button" aria-label="Close about Pulsii">close</button>
       <h2 id="about-title">one shared moment.</h2>
-      <p>Pulsii is one public canvas. A tap becomes a fading pulse for everyone currently here.</p>
+      <p>Pulsii is one public canvas. An accepted tap becomes one fading pulse on each healthy canvas that stays connected through its batch, including yours. If Pulsii cannot accept it, it says so rather than showing a private copy.</p>
       <p>No account, name, message, or canvas history. This is not a private room. Pulsii records aggregate operational counters without pulse positions, colours, or identifiers; the hosting provider may also keep ordinary connection logs.</p>
-      <p>Calm visuals start on with smaller, dimmer pulses. Pause hides pulse visuals immediately.</p>
+      <p>Calm visuals start on with smaller, dimmer pulses. Dense crowds automatically use small, non-additive halos and a brightness ceiling without imposing a fixed pulse cap. Pause hides pulse visuals immediately.</p>
       <div class="about-links">
         <a href="https://buymeacoffee.com/10000industries" target="_blank" rel="noopener noreferrer">support Pulsii</a>
-        <a href="https://github.com/10000Industries/Pulsii/blob/agent/pulsii-restoration/docs/privacy-and-safety.md" target="_blank" rel="noopener noreferrer">privacy notes</a>
+        <a href="/privacy">privacy</a>
         <a href="https://github.com/10000Industries/Pulsii" target="_blank" rel="noopener noreferrer">source and feedback</a>
       </div>
     </dialog>

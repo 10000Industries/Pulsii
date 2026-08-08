@@ -5,6 +5,8 @@ const { once } = require('node:events');
 const { performance } = require('node:perf_hooks');
 const { setTimeout: delay } = require('node:timers/promises');
 const WebSocket = require('ws');
+const { decodePulseBatch } = require('../lib/protocol');
+const { WEBSOCKET_PATH } = require('../server');
 
 const DEFAULT_SAMPLE_COUNT = 20;
 const DEFAULT_SAMPLE_INTERVAL_MS = 210;
@@ -93,12 +95,24 @@ async function verifyHttpSurface(target, timeoutMs) {
     '/healthz must expose a non-negative connection count',
   );
 
-  const [root, robots, script, style, manifest, socialImage, privateSource] =
+  const [
+    root,
+    robots,
+    script,
+    style,
+    privacy,
+    privacyStyle,
+    manifest,
+    socialImage,
+    privateSource,
+  ] =
     await Promise.all([
       fetchResponse(new URL('/', target), timeoutMs),
       fetchResponse(new URL('/robots.txt', target), timeoutMs),
       fetchResponse(new URL('/script.js', target), timeoutMs),
       fetchResponse(new URL('/style.css', target), timeoutMs),
+      fetchResponse(new URL('/privacy', target), timeoutMs),
+      fetchResponse(new URL('/privacy.css', target), timeoutMs),
       fetchResponse(new URL('/manifest.webmanifest', target), timeoutMs),
       fetchResponse(new URL('/og-image.png', target), timeoutMs),
       fetchResponse(new URL('/server.js', target), timeoutMs),
@@ -109,6 +123,8 @@ async function verifyHttpSurface(target, timeoutMs) {
     ['/robots.txt', robots],
     ['/script.js', script],
     ['/style.css', style],
+    ['/privacy', privacy],
+    ['/privacy.css', privacyStyle],
     ['/manifest.webmanifest', manifest],
     ['/og-image.png', socialImage],
   ]) {
@@ -139,8 +155,17 @@ async function verifyHttpSurface(target, timeoutMs) {
 async function connectObserved(websocketUrl, origin, timeoutMs) {
   const socket = new WebSocket(websocketUrl, { origin });
   const messages = [];
-  socket.on('message', (data) => {
+  socket.on('message', (data, isBinary) => {
     try {
+      if (isBinary) {
+        const batch = decodePulseBatch(data);
+        if (!batch) {
+          messages.push(null);
+          return;
+        }
+        messages.push(...batch.pulses);
+        return;
+      }
       messages.push(JSON.parse(data.toString()));
     } catch {
       messages.push(null);
@@ -191,8 +216,8 @@ async function closeObserved(client, timeoutMs = 1000) {
 function matchingPulse(message, pulse) {
   return (
     message?.type === 'pulse' &&
-    message.xNorm === pulse.xNorm &&
-    message.yNorm === pulse.yNorm &&
+    Math.abs(message.xNorm - pulse.xNorm) <= (1 / 0xffff) &&
+    Math.abs(message.yNorm - pulse.yNorm) <= (1 / 0xffff) &&
     message.color === pulse.color
   );
 }
@@ -219,6 +244,7 @@ async function runReviewProbe(rawTarget, options = {}) {
   const httpResult = await verifyHttpSurface(target, timeoutMs);
   const websocketUrl = new URL(target);
   websocketUrl.protocol = target.protocol === 'https:' ? 'wss:' : 'ws:';
+  websocketUrl.pathname = WEBSOCKET_PATH;
   const clients = [];
   const latencies = [];
   const samplePulses = [];
@@ -283,8 +309,8 @@ async function runReviewProbe(rawTarget, options = {}) {
       );
       assert.equal(
         sender.messages.filter((message) => matchingPulse(message, pulse)).length,
-        0,
-        'the server must not echo a sample to its sender',
+        1,
+        'each accepted sample must echo exactly once to its sender',
       );
     }
 

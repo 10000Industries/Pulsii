@@ -2,12 +2,22 @@
   'use strict';
 
   const PULSE_LIFETIME_SECONDS = 2.35;
+  const MIN_LATE_VISIBILITY_SECONDS = 0.4;
   const MAX_PULSE_ALPHA = 0.72;
-  const MAX_ACTIVE_PULSES = 180;
-  const REDUCED_MAX_ACTIVE_PULSES = 36;
   const DEFAULT_CALM_VISUALS = true;
   const RECONNECT_BASE_MS = 500;
   const RECONNECT_MAX_MS = 8000;
+  const CAPACITY_RECONNECT_BASE_MS = 15_000;
+  const CAPACITY_RECONNECT_MAX_MS = 60_000;
+  const RATE_LIMIT_RECONNECT_BASE_MS = 10_000;
+  const RATE_LIMIT_RECONNECT_MAX_MS = 30_000;
+  const CONNECTION_TIMEOUT_MS = 12_000;
+  const STABLE_CONNECTION_MS = 30_000;
+  const CROWD_VISUAL_THRESHOLD = 240;
+  const CROWD_INTENSITY_REFERENCE = 180;
+  const BATCH_PROTOCOL_VERSION = 1;
+  const BATCH_HEADER_BYTES = 19;
+  const PULSE_RECORD_BYTES = 7;
   const TAP_MAX_TRAVEL_PX = 12;
   const HEX_COLOR = /^#[0-9a-f]{6}$/i;
   const PULSE_KEYS = new Set(['type', 'xNorm', 'yNorm', 'color']);
@@ -59,14 +69,192 @@
     return Math.max(0, (now - createdAt) / 1000);
   }
 
-  function shouldUseCalmVisuals(manualCalm, prefersReducedMotion) {
-    return Boolean(manualCalm || prefersReducedMotion);
+  function pulseCreatedAtForBatch(serverTimeMs, wallNowMs, performanceNowMs) {
+    if (
+      !Number.isFinite(serverTimeMs) ||
+      !Number.isFinite(wallNowMs) ||
+      !Number.isFinite(performanceNowMs)
+    ) {
+      return performanceNowMs;
+    }
+    const lifetimeMs = PULSE_LIFETIME_SECONDS * 1000;
+    const latestVisibleAgeMs = Math.max(
+      0,
+      lifetimeMs - (MIN_LATE_VISIBILITY_SECONDS * 1000),
+    );
+    const ageAtReceiptMs = clamp(
+      wallNowMs - serverTimeMs,
+      0,
+      latestVisibleAgeMs,
+    );
+    return performanceNowMs - ageAtReceiptMs;
+  }
+
+  function shouldUseCalmVisuals(
+    manualCalm,
+    prefersReducedMotion,
+    activePulseCount = 0,
+    crowdMode = activePulseCount >= CROWD_VISUAL_THRESHOLD,
+  ) {
+    return Boolean(
+      manualCalm ||
+      prefersReducedMotion ||
+      crowdMode
+    );
+  }
+
+  function nextCrowdMode(active, activePulseCount) {
+    if (!Number.isFinite(activePulseCount) || activePulseCount < 0) {
+      return Boolean(active);
+    }
+    // Once a dense moment begins, keep its bounded visual profile until the
+    // canvas becomes quiet. This avoids a visible 239/240 mode oscillation.
+    if (active) return activePulseCount > 0;
+    return activePulseCount >= CROWD_VISUAL_THRESHOLD;
+  }
+
+  function jitteredBackoff(
+    attempt,
+    randomValue,
+    baseMs,
+    maximumMs,
+  ) {
+    const exponential = Math.min(
+      maximumMs,
+      baseMs * (2 ** Math.max(0, attempt)),
+    );
+    const jitter = 0.75 + (clamp(randomValue, 0, 1) * 0.5);
+    return Math.min(maximumMs, Math.round(exponential * jitter));
+  }
+
+  function reconnectPolicy(code, attempt, randomValue = Math.random()) {
+    if (code === 1008) {
+      return {
+        delayMs: jitteredBackoff(
+          attempt,
+          randomValue,
+          RATE_LIMIT_RECONNECT_BASE_MS,
+          RATE_LIMIT_RECONNECT_MAX_MS,
+        ),
+        state: 'limited',
+        text: 'paused · too many pulses',
+      };
+    }
+    if (code === 1013) {
+      return {
+        delayMs: jitteredBackoff(
+          attempt,
+          randomValue,
+          CAPACITY_RECONNECT_BASE_MS,
+          CAPACITY_RECONNECT_MAX_MS,
+        ),
+        state: 'full',
+        text: 'canvas full · retrying',
+      };
+    }
+    if (code === 1012) {
+      return {
+        delayMs: jitteredBackoff(attempt, randomValue, 1_500, 12_000),
+        state: 'connecting',
+        text: 'canvas restarting',
+      };
+    }
+    return {
+      delayMs: jitteredBackoff(
+        attempt,
+        randomValue,
+        RECONNECT_BASE_MS,
+        RECONNECT_MAX_MS,
+      ),
+      state: 'connecting',
+      text: 'reconnecting',
+    };
   }
 
   function reconnectDelay(attempt, randomValue = Math.random()) {
-    const exponential = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * (2 ** Math.max(0, attempt)));
-    const jitter = 0.8 + (clamp(randomValue, 0, 1) * 0.4);
-    return Math.min(RECONNECT_MAX_MS, Math.round(exponential * jitter));
+    return reconnectPolicy(1006, attempt, randomValue).delayMs;
+  }
+
+  function crowdIntensityScale(activePulseCount) {
+    if (
+      !Number.isFinite(activePulseCount) ||
+      activePulseCount <= CROWD_INTENSITY_REFERENCE
+    ) {
+      return 1;
+    }
+    return Math.max(
+      0.08,
+      Math.sqrt(CROWD_INTENSITY_REFERENCE / activePulseCount),
+    );
+  }
+
+  function decodePulseBatch(data) {
+    let view;
+    if (data instanceof ArrayBuffer) {
+      view = new DataView(data);
+    } else if (ArrayBuffer.isView(data)) {
+      view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    } else {
+      return null;
+    }
+    if (view.byteLength < BATCH_HEADER_BYTES) return null;
+    if (view.getUint8(0) !== BATCH_PROTOCOL_VERSION) return null;
+
+    const count = view.getUint16(17, false);
+    const sequence = view.getUint32(5, false);
+    if (
+      count === 0 ||
+      sequence === 0 ||
+      view.byteLength !==
+      BATCH_HEADER_BYTES + (count * PULSE_RECORD_BYTES)
+    ) {
+      return null;
+    }
+
+    const pulses = new Array(count);
+    for (let index = 0; index < count; index += 1) {
+      const offset = BATCH_HEADER_BYTES + (index * PULSE_RECORD_BYTES);
+      const red = view.getUint8(offset + 4);
+      const green = view.getUint8(offset + 5);
+      const blue = view.getUint8(offset + 6);
+      pulses[index] = {
+        type: 'pulse',
+        xNorm: view.getUint16(offset, false) / 65_535,
+        yNorm: view.getUint16(offset + 2, false) / 65_535,
+        color: `#${red.toString(16).padStart(2, '0')}${green
+          .toString(16)
+          .padStart(2, '0')}${blue.toString(16).padStart(2, '0')}`,
+      };
+    }
+
+    const serverTimeMs =
+      (view.getUint32(9, false) * 4_294_967_296) +
+      view.getUint32(13, false);
+    if (!Number.isSafeInteger(serverTimeMs)) return null;
+
+    return {
+      count,
+      processEpoch: view.getUint32(1, false),
+      pulses,
+      sequence,
+      serverTimeMs,
+    };
+  }
+
+  function isNewBatchSequence(previousSequence, nextSequence) {
+    if (
+      !Number.isInteger(previousSequence) ||
+      !Number.isInteger(nextSequence) ||
+      previousSequence < 0 ||
+      previousSequence > 0xffff_ffff ||
+      nextSequence <= 0 ||
+      nextSequence > 0xffff_ffff
+    ) {
+      return false;
+    }
+    if (previousSequence === 0) return true;
+    const forwardDistance = (nextSequence - previousSequence) >>> 0;
+    return forwardDistance > 0 && forwardDistance < 0x8000_0000;
   }
 
   function connectionLabel(count) {
@@ -95,19 +283,30 @@
   }
 
   const core = Object.freeze({
+    BATCH_HEADER_BYTES,
+    BATCH_PROTOCOL_VERSION,
+    CONNECTION_TIMEOUT_MS,
+    CROWD_VISUAL_THRESHOLD,
     HEX_COLOR,
+    MIN_LATE_VISIBILITY_SECONDS,
     DEFAULT_CALM_VISUALS,
-    MAX_ACTIVE_PULSES,
     PULSE_LIFETIME_SECONDS,
-    REDUCED_MAX_ACTIVE_PULSES,
     canonicalShareUrl,
     connectionLabel,
+    crowdIntensityScale,
+    decodePulseBatch,
     hexToRgb,
     isTapGesture,
+    isNewBatchSequence,
     normalizePulse,
+    nextCrowdMode,
+    PULSE_RECORD_BYTES,
+    STABLE_CONNECTION_MS,
     pulseAgeSeconds,
+    pulseCreatedAtForBatch,
     pulseOpacity,
     reconnectDelay,
+    reconnectPolicy,
     shouldUseCalmVisuals,
   });
 
@@ -118,9 +317,8 @@
   if (!root.document) return;
 
   const document = root.document;
-  const canvas = document.getElementById('canvas');
+  let canvas = document.getElementById('canvas');
   const stage = document.getElementById('stage');
-  const context = canvas && canvas.getContext('2d');
   const intro = document.getElementById('intro');
   const status = document.getElementById('connection-status');
   const statusText = document.getElementById('status-text');
@@ -133,11 +331,14 @@
   const aboutDialog = document.getElementById('about-dialog');
   const aboutClose = document.getElementById('about-close');
   const actionFeedback = document.getElementById('action-feedback');
+  const connectionAnnouncer = document.getElementById('connection-announcer');
+  const pulseActivity = document.getElementById('pulse-activity');
+  const visualProfileStatus = document.getElementById('visual-profile-status');
+  const colorHint = document.getElementById('color-hint');
 
   if (
     !canvas ||
     !stage ||
-    !context ||
     !status ||
     !statusText ||
     !colorInput ||
@@ -148,10 +349,308 @@
     !aboutButton ||
     !aboutDialog ||
     !aboutClose ||
-    !actionFeedback
+    !actionFeedback ||
+    !connectionAnnouncer ||
+    !pulseActivity ||
+    !visualProfileStatus ||
+    !colorHint
   ) {
     return;
   }
+
+  function createShader(gl, type, source) {
+    const shader = gl.createShader(type);
+    if (!shader) throw new Error('Unable to create pulse shader');
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      const message = gl.getShaderInfoLog(shader) || 'Pulse shader failed';
+      gl.deleteShader(shader);
+      throw new Error(message);
+    }
+    return shader;
+  }
+
+  function createWebGlPulseRenderer(targetCanvas) {
+    const gl = targetCanvas.getContext('webgl2', {
+      alpha: false,
+      antialias: false,
+      depth: false,
+      desynchronized: true,
+      powerPreference: 'high-performance',
+      preserveDrawingBuffer: false,
+      stencil: false,
+    });
+    if (!gl) return null;
+
+    const vertexSource = `#version 300 es
+      precision highp float;
+      layout(location = 0) in vec2 aCorner;
+      layout(location = 1) in vec2 aCenter;
+      layout(location = 2) in vec3 aColor;
+      layout(location = 3) in float aCreatedAt;
+      uniform vec2 uViewport;
+      uniform float uNow;
+      uniform float uLifetime;
+      uniform float uRadialSpeed;
+      uniform float uCalm;
+      uniform float uStatic;
+      uniform float uIntensity;
+      out vec2 vOffset;
+      out vec3 vColor;
+      out float vRadius;
+      out float vLineWidth;
+      out float vAlpha;
+      out float vAlive;
+
+      void main() {
+        float age = max(0.0, uNow - aCreatedAt);
+        float progress = clamp(age / uLifetime, 0.0, 1.0);
+        float fullRadius = age * uRadialSpeed;
+        float calmRadius = 18.0 + (progress * 8.0);
+        float radius = mix(fullRadius, calmRadius, uCalm);
+        radius = mix(radius, 22.0, uStatic);
+        float fullLine = max(1.25, 3.75 - (progress * 2.25));
+        float lineWidth = mix(fullLine, 2.0, uCalm);
+        vec2 offset = aCorner * (radius + lineWidth + 2.0);
+        vec2 position = (aCenter * uViewport) + offset;
+        vec2 clip = ((position / uViewport) * 2.0) - 1.0;
+
+        gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+        vOffset = offset;
+        vColor = aColor;
+        vRadius = radius;
+        vLineWidth = lineWidth;
+        vAlpha = 0.72 * exp(-4.2 * progress) * mix(1.0, 0.28, uCalm) * uIntensity;
+        vAlive = 1.0 - step(uLifetime, age);
+      }
+    `;
+    const fragmentSource = `#version 300 es
+      precision highp float;
+      in vec2 vOffset;
+      in vec3 vColor;
+      in float vRadius;
+      in float vLineWidth;
+      in float vAlpha;
+      in float vAlive;
+      out vec4 outputColor;
+
+      void main() {
+        if (vAlive < 0.5) discard;
+        float distanceFromRing = abs(length(vOffset) - vRadius);
+        float innerEdge = max(0.0, (vLineWidth * 0.5) - 1.0);
+        float outerEdge = (vLineWidth * 0.5) + 1.0;
+        float coverage = 1.0 - smoothstep(innerEdge, outerEdge, distanceFromRing);
+        if (coverage <= 0.0) discard;
+        float alpha = vAlpha * coverage;
+        outputColor = vec4(vColor * alpha, alpha);
+      }
+    `;
+
+    const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexSource);
+    const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
+    const program = gl.createProgram();
+    if (!program) throw new Error('Unable to create pulse program');
+    gl.attachShader(program, vertexShader);
+    gl.attachShader(program, fragmentShader);
+    gl.linkProgram(program);
+    gl.deleteShader(vertexShader);
+    gl.deleteShader(fragmentShader);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      throw new Error(gl.getProgramInfoLog(program) || 'Pulse program failed');
+    }
+
+    const cornerBuffer = gl.createBuffer();
+    const instanceBuffer = gl.createBuffer();
+    if (!cornerBuffer || !instanceBuffer) {
+      throw new Error('Unable to allocate pulse buffers');
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, cornerBuffer);
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      new Float32Array([
+        -1, -1,
+        1, -1,
+        -1, 1,
+        -1, 1,
+        1, -1,
+        1, 1,
+      ]),
+      gl.STATIC_DRAW,
+    );
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+    const instanceStride = 6 * Float32Array.BYTES_PER_ELEMENT;
+    gl.bindBuffer(gl.ARRAY_BUFFER, instanceBuffer);
+    for (const [location, size, offset] of [
+      [1, 2, 0],
+      [2, 3, 2 * Float32Array.BYTES_PER_ELEMENT],
+      [3, 1, 5 * Float32Array.BYTES_PER_ELEMENT],
+    ]) {
+      gl.enableVertexAttribArray(location);
+      gl.vertexAttribPointer(
+        location,
+        size,
+        gl.FLOAT,
+        false,
+        instanceStride,
+        offset,
+      );
+      gl.vertexAttribDivisor(location, 1);
+    }
+
+    const uniforms = Object.fromEntries(
+      [
+        'uViewport',
+        'uNow',
+        'uLifetime',
+        'uRadialSpeed',
+        'uCalm',
+        'uStatic',
+        'uIntensity',
+      ].map((name) => [name, gl.getUniformLocation(program, name)]),
+    );
+    let uploadedRevision = -1;
+
+    function upload(activePulses, revision) {
+      if (revision === uploadedRevision) return;
+      const data = new Float32Array(activePulses.length * 6);
+      for (let index = 0; index < activePulses.length; index += 1) {
+        const pulse = activePulses[index];
+        const offset = index * 6;
+        data[offset] = pulse.xNorm;
+        data[offset + 1] = pulse.yNorm;
+        data[offset + 2] = pulse.rgb.r / 255;
+        data[offset + 3] = pulse.rgb.g / 255;
+        data[offset + 4] = pulse.rgb.b / 255;
+        data[offset + 5] = pulse.createdAt / 1000;
+      }
+      gl.bindBuffer(gl.ARRAY_BUFFER, instanceBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+      uploadedRevision = revision;
+    }
+
+    return {
+      kind: 'webgl2',
+      clear() {
+        gl.clearColor(0, 0, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+      },
+      resize() {
+        gl.viewport(0, 0, targetCanvas.width, targetCanvas.height);
+        this.clear();
+      },
+      render(activePulses, now, profile, revision, viewport) {
+        upload(activePulses, revision);
+        gl.clearColor(0, 0, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        if (activePulses.length === 0) return;
+
+        gl.useProgram(program);
+        gl.enable(gl.BLEND);
+        // Every fragment is premultiplied in the shader. MAX blending keeps
+        // overlap brightness-bounded in both visual profiles: repeated pulses
+        // at one coordinate cannot accumulate into an unbounded white flash.
+        gl.blendEquation(gl.MAX);
+        gl.blendFunc(gl.ONE, gl.ONE);
+        gl.uniform2f(uniforms.uViewport, viewport.width, viewport.height);
+        gl.uniform1f(uniforms.uNow, now / 1000);
+        gl.uniform1f(uniforms.uLifetime, PULSE_LIFETIME_SECONDS);
+        gl.uniform1f(
+          uniforms.uRadialSpeed,
+          Math.max(250, Math.hypot(viewport.width, viewport.height) * 0.34),
+        );
+        gl.uniform1f(uniforms.uCalm, profile.calm ? 1 : 0);
+        gl.uniform1f(uniforms.uStatic, profile.static ? 1 : 0);
+        gl.uniform1f(uniforms.uIntensity, profile.intensity);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, activePulses.length);
+      },
+    };
+  }
+
+  function createCanvasPulseRenderer(targetCanvas) {
+    const context = targetCanvas.getContext('2d', { alpha: false });
+    if (!context) return null;
+
+    return {
+      kind: 'canvas2d',
+      clear() {
+        context.globalAlpha = 1;
+        context.globalCompositeOperation = 'source-over';
+        context.fillStyle = '#000';
+        context.fillRect(0, 0, cssWidth, cssHeight);
+      },
+      resize(width, height, ratio) {
+        context.setTransform(ratio, 0, 0, ratio, 0, 0);
+        this.clear();
+      },
+      render(activePulses, now, profile, revision, viewport) {
+        this.clear();
+        if (activePulses.length === 0) return;
+        // Match the GPU renderer's brightness ceiling. `lighten` selects the
+        // brightest channel contribution instead of accumulating overlaps.
+        context.globalCompositeOperation = 'lighten';
+        context.lineCap = 'round';
+        const radialSpeed = Math.max(
+          250,
+          Math.hypot(viewport.width, viewport.height) * 0.34,
+        );
+
+        for (const pulse of activePulses) {
+          const age = pulseAgeSeconds(pulse.createdAt, now);
+          const progress = age / PULSE_LIFETIME_SECONDS;
+          const radius = profile.static
+            ? 22
+            : profile.calm
+              ? 18 + (progress * 8)
+              : age * radialSpeed;
+          const alpha = pulseOpacity(age) *
+            (profile.calm ? 0.28 : 1) *
+            profile.intensity;
+
+          // Pre-scale colour and draw opaquely so both profiles retain the
+          // same overlap ceiling as WebGL's premultiplied MAX blend.
+          context.globalAlpha = 1;
+          context.strokeStyle = `rgb(${Math.round(pulse.rgb.r * alpha)} ${Math.round(
+            pulse.rgb.g * alpha,
+          )} ${Math.round(pulse.rgb.b * alpha)})`;
+          context.lineWidth = profile.calm
+            ? 2
+            : Math.max(1.25, 3.75 - (progress * 2.25));
+          context.beginPath();
+          context.arc(
+            pulse.xNorm * viewport.width,
+            pulse.yNorm * viewport.height,
+            radius,
+            0,
+            Math.PI * 2,
+          );
+          context.stroke();
+        }
+        context.globalAlpha = 1;
+        context.globalCompositeOperation = 'source-over';
+      },
+    };
+  }
+
+  let renderer;
+  let webGlInitializationFailed = false;
+  try {
+    renderer = createWebGlPulseRenderer(canvas);
+  } catch (error) {
+    webGlInitializationFailed = true;
+    renderer = null;
+  }
+  if (!renderer && webGlInitializationFailed) {
+    // A canvas cannot switch context types after WebGL creation. Replace the
+    // untouched element before asking for the 2D fallback.
+    const replacementCanvas = canvas.cloneNode(false);
+    canvas.replaceWith(replacementCanvas);
+    canvas = replacementCanvas;
+  }
+  renderer ||= createCanvasPulseRenderer(canvas);
+  if (!renderer) return;
 
   const brightPalette = ['#00d4ff', '#ff4d8d', '#ffd166', '#7cff6b', '#b388ff', '#ff7a45'];
   const reducedMotion = root.matchMedia('(prefers-reduced-motion: reduce)');
@@ -165,12 +664,23 @@
   let reconnectAttempt = 0;
   let presenceCount = null;
   let connectionStopped = false;
+  let connectionTimeoutTimer = null;
+  let stableConnectionTimer = null;
   let resizeFrame = null;
   let animationFrame = null;
+  let pulseRevision = 0;
+  let rendererContextLost = false;
+  let lastBatchEpoch = null;
+  let lastBatchSequence = 0;
   let calmVisuals = DEFAULT_CALM_VISUALS;
+  let crowdVisualsActive = false;
+  let calmControlSignature = '';
   let visualsPaused = false;
   let feedbackTimer = null;
   let crowdedStatusTimer = null;
+  let busyUntil = 0;
+  let pulseActivityTimer = null;
+  let unannouncedPulseCount = 0;
   const canvasPointers = new Map();
   let canvasGestureHadMultiplePointers = false;
 
@@ -188,18 +698,46 @@
     maxTravel: 0,
   };
 
-  function setStatus(state, text) {
+  function setStatus(state, text, announce = true) {
+    const previousState = status.dataset.state;
     status.dataset.state = state;
     statusText.textContent = text;
     inviteButton.disabled = state !== 'live' && state !== 'crowded';
+    if (previousState === state || !announce) return;
+    const announcements = {
+      connecting: 'Pulsii is connecting.',
+      crowded: 'Pulsii is live, but the canvas is busy.',
+      full: 'The Pulsii canvas is currently full.',
+      limited: 'Pulsii paused this connection after too many pulses.',
+      live: 'Pulsii is connected and sharing live.',
+      offline: 'Pulsii is offline. Pulses are not being shared.',
+    };
+    connectionAnnouncer.textContent = announcements[state] || text;
   }
 
-  function showLiveStatus() {
+  function announcePulseBatch(count) {
+    if (!Number.isInteger(count) || count <= 0) return;
+    unannouncedPulseCount += count;
+    if (pulseActivityTimer !== null) return;
+    pulseActivityTimer = root.setTimeout(() => {
+      pulseActivityTimer = null;
+      const total = unannouncedPulseCount;
+      unannouncedPulseCount = 0;
+      pulseActivity.textContent =
+        total === 1 ? '1 shared pulse appeared.' : `${total} shared pulses appeared.`;
+    }, 10_000);
+  }
+
+  function dismissColorHint() {
+    colorHint.classList.add('dismissed');
+  }
+
+  function showLiveStatus(announce = true) {
     if (crowdedStatusTimer !== null) {
       root.clearTimeout(crowdedStatusTimer);
       crowdedStatusTimer = null;
     }
-    setStatus('live', connectionLabel(presenceCount));
+    setStatus('live', connectionLabel(presenceCount), announce);
     inviteButton.textContent = presenceCount === 1 ? 'invite' : 'share';
   }
 
@@ -247,6 +785,8 @@
     colorInput.style.top = `${picker.y - picker.radius}px`;
     colorInput.style.width = `${picker.radius * 2}px`;
     colorInput.style.height = `${picker.radius * 2}px`;
+    colorHint.style.left = `${picker.x + picker.radius + 10}px`;
+    colorHint.style.top = `${picker.y}px`;
   }
 
   function resizeCanvas() {
@@ -256,9 +796,7 @@
 
     canvas.width = Math.round(cssWidth * deviceRatio);
     canvas.height = Math.round(cssHeight * deviceRatio);
-    context.setTransform(deviceRatio, 0, 0, deviceRatio, 0, 0);
-    context.fillStyle = '#000';
-    context.fillRect(0, 0, cssWidth, cssHeight);
+    renderer.resize(cssWidth, cssHeight, deviceRatio);
     syncPickerPosition();
     if (pulses.length > 0) startAnimation();
   }
@@ -271,29 +809,39 @@
     });
   }
 
-  function addPulse(pulse) {
+  function addPulse(pulse, createdAt = root.performance.now()) {
     const normalized = normalizePulse(pulse);
     if (!normalized) return false;
     if (visualsPaused) return true;
     const rgb = hexToRgb(normalized.color);
     if (!rgb) return false;
 
-    const pulseLimit = shouldUseCalmVisuals(calmVisuals, reducedMotion.matches)
-      ? REDUCED_MAX_ACTIVE_PULSES
-      : MAX_ACTIVE_PULSES;
-    if (pulses.length >= pulseLimit) {
-      pulses.splice(0, pulses.length - pulseLimit + 1);
-    }
-
     pulses.push({
       xNorm: normalized.xNorm,
       yNorm: normalized.yNorm,
       color: normalized.color,
       rgb,
-      createdAt: root.performance.now(),
+      createdAt,
     });
+    pulseRevision += 1;
     startAnimation();
     return true;
+  }
+
+  function addPulseBatch(batch) {
+    if (!batch || batch.pulses.length === 0) return;
+    if (document.hidden || visualsPaused) return;
+    // The server timestamp keeps the same batch at the same logical phase on
+    // clients with different network delays. A very late client still gets a
+    // short visible tail instead of silently losing an accepted contribution.
+    const createdAt = pulseCreatedAtForBatch(
+      batch.serverTimeMs,
+      Date.now(),
+      root.performance.now(),
+    );
+    for (const pulse of batch.pulses) addPulse(pulse, createdAt);
+    intro?.classList.add('dismissed');
+    announcePulseBatch(batch.pulses.length);
   }
 
   function sendPulse(xNorm, yNorm) {
@@ -305,14 +853,16 @@
     });
 
     if (!pulse) return;
-    addPulse(pulse);
-
+    dismissColorHint();
     if (
       socket?.readyState === root.WebSocket.OPEN &&
       Number.isInteger(presenceCount)
     ) {
+      if (Date.now() < busyUntil) {
+        showActionFeedback('canvas busy · try again shortly');
+        return;
+      }
       socket.send(JSON.stringify(pulse));
-      intro?.classList.add('dismissed');
       return;
     }
 
@@ -412,6 +962,7 @@
   }
 
   function openColorPicker() {
+    dismissColorHint();
     colorInput.style.pointerEvents = 'auto';
     try {
       colorInput.focus({ preventScroll: true });
@@ -434,6 +985,7 @@
 
   function startPickerDrag(event) {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
+    dismissColorHint();
     picker.dragging = true;
     picker.pointerId = event.pointerId;
     picker.startX = picker.x;
@@ -490,6 +1042,20 @@
   }
 
   function handleMessage(event) {
+    if (typeof event.data !== 'string') {
+      const batch = decodePulseBatch(event.data);
+      if (!batch || batch.count === 0) return;
+
+      if (lastBatchEpoch !== batch.processEpoch) {
+        lastBatchEpoch = batch.processEpoch;
+        lastBatchSequence = 0;
+      }
+      if (!isNewBatchSequence(lastBatchSequence, batch.sequence)) return;
+      lastBatchSequence = batch.sequence;
+      addPulseBatch(batch);
+      return;
+    }
+
     let message;
     try {
       message = JSON.parse(event.data);
@@ -499,24 +1065,27 @@
 
     if (message?.type === 'presence' && Number.isInteger(message.count) && message.count >= 0) {
       presenceCount = message.count;
-      reconnectAttempt = 0;
       showLiveStatus();
       return;
     }
 
-    if (message?.type === 'congestion') {
-      setStatus('crowded', 'live · crowded · some pulses not shared');
+    if (
+      message?.type === 'busy' &&
+      Number.isInteger(message.retryAfterMs) &&
+      message.retryAfterMs > 0
+    ) {
+      busyUntil = Math.max(busyUntil, Date.now() + message.retryAfterMs);
+      setStatus('crowded', 'live · busy · pulse not shared', false);
+      showActionFeedback('that pulse was not accepted · try again shortly');
       if (crowdedStatusTimer !== null) {
         root.clearTimeout(crowdedStatusTimer);
       }
       crowdedStatusTimer = root.setTimeout(() => {
         crowdedStatusTimer = null;
-        if (Number.isInteger(presenceCount)) showLiveStatus();
-      }, 2500);
+        if (Number.isInteger(presenceCount)) showLiveStatus(false);
+      }, Math.min(10_000, message.retryAfterMs));
       return;
     }
-
-    addPulse(message);
   }
 
   function clearReconnectTimer() {
@@ -526,11 +1095,38 @@
     }
   }
 
-  function scheduleReconnect() {
+  function clearConnectionTimeout() {
+    if (connectionTimeoutTimer === null) return;
+    root.clearTimeout(connectionTimeoutTimer);
+    connectionTimeoutTimer = null;
+  }
+
+  function clearStableConnectionTimer() {
+    if (stableConnectionTimer === null) return;
+    root.clearTimeout(stableConnectionTimer);
+    stableConnectionTimer = null;
+  }
+
+  function scheduleStableConnectionReset(activeSocket) {
+    if (reconnectAttempt === 0 || stableConnectionTimer !== null) return;
+    stableConnectionTimer = root.setTimeout(() => {
+      stableConnectionTimer = null;
+      if (
+        socket === activeSocket &&
+        activeSocket.readyState === root.WebSocket.OPEN &&
+        Number.isInteger(presenceCount)
+      ) {
+        reconnectAttempt = 0;
+      }
+    }, STABLE_CONNECTION_MS);
+  }
+
+  function scheduleReconnect(closeCode = 1006) {
     if (connectionStopped || reconnectTimer !== null || !root.navigator.onLine) return;
-    const delay = reconnectDelay(reconnectAttempt);
+    const policy = reconnectPolicy(closeCode, reconnectAttempt);
+    const delay = policy.delayMs;
     reconnectAttempt += 1;
-    setStatus('connecting', 'reconnecting');
+    setStatus(policy.state, policy.text);
     reconnectTimer = root.setTimeout(() => {
       reconnectTimer = null;
       connect();
@@ -547,11 +1143,11 @@
       return;
     }
     if (!/^https?:$/.test(root.location.protocol)) {
-      setStatus('offline', 'local only');
+      setStatus('offline', 'not connected');
       return;
     }
     if (!root.navigator.onLine) {
-      setStatus('offline', 'offline · local only');
+      setStatus('offline', 'offline · not sharing');
       return;
     }
 
@@ -562,12 +1158,24 @@
     const protocol = root.location.protocol === 'https:' ? 'wss:' : 'ws:';
     let nextSocket;
     try {
-      nextSocket = new root.WebSocket(`${protocol}//${root.location.host}`);
+      nextSocket = new root.WebSocket(`${protocol}//${root.location.host}/live`);
     } catch (error) {
       scheduleReconnect();
       return;
     }
     socket = nextSocket;
+    nextSocket.binaryType = 'arraybuffer';
+    clearConnectionTimeout();
+    connectionTimeoutTimer = root.setTimeout(() => {
+      connectionTimeoutTimer = null;
+      if (socket !== nextSocket) return;
+      try {
+        nextSocket.close(4000, 'Ready timeout');
+      } catch (error) {
+        socket = null;
+        scheduleReconnect();
+      }
+    }, CONNECTION_TIMEOUT_MS);
 
     nextSocket.addEventListener('open', () => {
       if (socket !== nextSocket) return;
@@ -575,14 +1183,21 @@
     });
 
     nextSocket.addEventListener('message', (event) => {
-      if (socket === nextSocket) handleMessage(event);
+      if (socket !== nextSocket) return;
+      handleMessage(event);
+      if (Number.isInteger(presenceCount)) {
+        clearConnectionTimeout();
+        scheduleStableConnectionReset(nextSocket);
+      }
     });
 
-    nextSocket.addEventListener('close', () => {
+    nextSocket.addEventListener('close', (event) => {
       if (socket !== nextSocket) return;
+      clearConnectionTimeout();
+      clearStableConnectionTimer();
       socket = null;
       presenceCount = null;
-      scheduleReconnect();
+      scheduleReconnect(event.code);
     });
 
     nextSocket.addEventListener('error', () => {
@@ -599,6 +1214,8 @@
   function stopConnection() {
     connectionStopped = true;
     clearReconnectTimer();
+    clearConnectionTimeout();
+    clearStableConnectionTimer();
     if (socket) {
       const activeSocket = socket;
       socket = null;
@@ -607,51 +1224,51 @@
   }
 
   function startAnimation() {
-    if (visualsPaused) return;
+    if (visualsPaused || rendererContextLost) return;
     if (animationFrame !== null) return;
     animationFrame = root.requestAnimationFrame(animate);
   }
 
   function animate(now) {
     animationFrame = null;
-
-    context.globalCompositeOperation = 'source-over';
-    context.globalAlpha = 1;
-    context.fillStyle = '#000';
-    context.fillRect(0, 0, cssWidth, cssHeight);
-    if (visualsPaused) return;
-
-    const isCalm = shouldUseCalmVisuals(calmVisuals, reducedMotion.matches);
-    const radialSpeed = Math.max(250, Math.hypot(cssWidth, cssHeight) * 0.34);
-
-    context.globalCompositeOperation = isCalm ? 'source-over' : 'lighter';
-    context.lineCap = 'round';
-
-    for (let index = pulses.length - 1; index >= 0; index -= 1) {
-      const pulse = pulses[index];
-      const age = pulseAgeSeconds(pulse.createdAt, now);
-
-      if (age >= PULSE_LIFETIME_SECONDS) {
-        pulses.splice(index, 1);
-        continue;
-      }
-
-      const progress = age / PULSE_LIFETIME_SECONDS;
-      const radius = isCalm ? 18 + (progress * 8) : age * radialSpeed;
-      const alpha = pulseOpacity(age) * (isCalm ? 0.28 : 1);
-      const x = pulse.xNorm * cssWidth;
-      const y = pulse.yNorm * cssHeight;
-
-      context.globalAlpha = alpha;
-      context.strokeStyle = `rgb(${pulse.rgb.r} ${pulse.rgb.g} ${pulse.rgb.b})`;
-      context.lineWidth = isCalm ? 2 : Math.max(1.25, 3.75 - (progress * 2.25));
-      context.beginPath();
-      context.arc(x, y, radius, 0, Math.PI * 2);
-      context.stroke();
+    if (visualsPaused) {
+      renderer.clear();
+      return;
     }
 
-    context.globalAlpha = 1;
-    context.globalCompositeOperation = 'source-over';
+    let expiredCount = 0;
+    while (
+      expiredCount < pulses.length &&
+      pulseAgeSeconds(pulses[expiredCount].createdAt, now) >=
+        PULSE_LIFETIME_SECONDS
+    ) {
+      expiredCount += 1;
+    }
+    if (expiredCount > 0) {
+      pulses.splice(0, expiredCount);
+      pulseRevision += 1;
+    }
+
+    crowdVisualsActive = nextCrowdMode(crowdVisualsActive, pulses.length);
+    const crowdMode = crowdVisualsActive;
+    const profile = {
+      calm: shouldUseCalmVisuals(
+        calmVisuals,
+        reducedMotion.matches,
+        pulses.length,
+        crowdMode,
+      ),
+      intensity: crowdIntensityScale(pulses.length),
+      static: reducedMotion.matches || crowdMode,
+    };
+    renderer.render(
+      pulses,
+      now,
+      profile,
+      pulseRevision,
+      { width: cssWidth, height: cssHeight },
+    );
+    syncCalmControl(false, crowdMode);
     if (pulses.length > 0) startAnimation();
   }
 
@@ -667,26 +1284,42 @@
 
   function clearPulseCanvas() {
     pulses.length = 0;
+    crowdVisualsActive = false;
+    pulseRevision += 1;
     if (animationFrame !== null) {
       root.cancelAnimationFrame(animationFrame);
       animationFrame = null;
     }
-    context.globalAlpha = 1;
-    context.globalCompositeOperation = 'source-over';
-    context.fillStyle = '#000';
-    context.fillRect(0, 0, cssWidth, cssHeight);
+    renderer.clear();
   }
 
-  function syncCalmControl(notify = false) {
-    const active = shouldUseCalmVisuals(calmVisuals, reducedMotion.matches);
-    calmButton.setAttribute('aria-pressed', String(active));
-    calmButton.textContent = active ? 'calm' : 'full';
-    calmButton.setAttribute(
-      'aria-label',
-      active ? 'Calm pulse visuals on' : 'Full pulse visuals on',
-    );
-    clearPulseCanvas();
-    if (notify) showActionFeedback(active ? 'calm visuals on' : 'full visuals on');
+  function syncCalmControl(
+    notify = false,
+    crowdMode = crowdVisualsActive,
+  ) {
+    const signature = `${calmVisuals}:${crowdMode}:${reducedMotion.matches}`;
+    if (!notify && signature === calmControlSignature) return;
+    calmControlSignature = signature;
+    calmButton.setAttribute('aria-pressed', String(calmVisuals));
+    calmButton.textContent = calmVisuals ? 'calm' : 'full';
+    calmButton.setAttribute('aria-label', 'Toggle calm pulse visuals');
+    visualProfileStatus.textContent = crowdMode
+      ? 'Dense-crowd visual limits are active until the canvas is quiet.'
+      : reducedMotion.matches
+        ? 'Static pulse visuals follow this device reduced-motion setting.'
+        : calmVisuals
+          ? 'Calm pulse visuals are on.'
+          : 'Expanding pulse visuals are on.';
+    if (pulses.length > 0) startAnimation();
+    if (notify) {
+      showActionFeedback(
+        crowdMode
+          ? 'crowd visual limits stay on until the canvas is quiet'
+          : shouldUseCalmVisuals(calmVisuals, reducedMotion.matches)
+            ? 'calm visuals on'
+            : 'full visuals on',
+      );
+    }
   }
 
   function setVisualsPaused(paused) {
@@ -702,6 +1335,34 @@
       showActionFeedback('pulse visuals paused');
     } else {
       showActionFeedback('pulse visuals resumed');
+    }
+  }
+
+  function handleRendererContextLost(event) {
+    if (renderer.kind !== 'webgl2') return;
+    event.preventDefault();
+    rendererContextLost = true;
+    if (animationFrame !== null) {
+      root.cancelAnimationFrame(animationFrame);
+      animationFrame = null;
+    }
+    showActionFeedback('pulse renderer paused · restoring');
+  }
+
+  function handleRendererContextRestored() {
+    if (renderer.kind !== 'webgl2') return;
+    try {
+      const restoredRenderer = createWebGlPulseRenderer(canvas);
+      if (!restoredRenderer) throw new Error('WebGL did not restore');
+      renderer = restoredRenderer;
+      rendererContextLost = false;
+      pulseRevision += 1;
+      resizeCanvas();
+      startAnimation();
+      showActionFeedback('pulse renderer restored');
+    } catch (error) {
+      rendererContextLost = true;
+      showActionFeedback('pulse renderer unavailable · reload to retry');
     }
   }
 
@@ -781,6 +1442,10 @@
     root.addEventListener('pointerup', (event) => finishCanvasPointer(event));
     root.addEventListener('pointercancel', (event) => finishCanvasPointer(event, true));
     canvas.addEventListener('keydown', handleCanvasKeyDown);
+    if (renderer.kind === 'webgl2') {
+      canvas.addEventListener('webglcontextlost', handleRendererContextLost);
+      canvas.addEventListener('webglcontextrestored', handleRendererContextRestored);
+    }
     colorHandle.addEventListener('pointerdown', startPickerDrag);
     root.addEventListener('pointermove', movePicker, { passive: false });
     root.addEventListener('pointerup', (event) => finishPickerDrag(event, true));
@@ -809,7 +1474,7 @@
 
     root.addEventListener('offline', () => {
       stopConnection();
-      setStatus('offline', 'offline · local only');
+      setStatus('offline', 'offline · not sharing');
     });
 
     root.addEventListener('online', () => {
@@ -819,6 +1484,9 @@
     });
 
     root.addEventListener('pagehide', stopConnection);
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) clearPulseCanvas();
+    });
     root.addEventListener('pageshow', (event) => {
       if (!event.persisted) return;
       connectionStopped = false;
