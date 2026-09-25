@@ -111,6 +111,9 @@ test('uses server time for a shared phase while preserving a late visible tail',
 });
 
 test('bounds reconnect delay and selects explicit close-code policies', () => {
+  assert.deepEqual(reconnectPolicy(4000, 0), {
+    delayMs: null, state: 'ended', text: 'session ended',
+  });
   assert.equal(reconnectDelay(0, 0.5), 500);
   assert.equal(reconnectDelay(1, 0.5), 1000);
   assert.equal(reconnectDelay(20, 0.5), 8000);

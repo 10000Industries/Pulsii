@@ -1,5 +1,9 @@
 # Isolated review deployment
 
+> Historical runbook: status and approvals below are not current evidence.
+> Reverify the service state and current owner authority before applying it.
+> See [trial controls](trial-controls.md) for the newer optional runtime guard.
+
 ## Current production boundary
 
 Paying the overdue Render balance resumed the existing paid production service.

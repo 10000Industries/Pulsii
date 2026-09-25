@@ -1,5 +1,9 @@
 # Pulsii review and production-promotion runbook
 
+> Historical runbook: status and approvals below are not current evidence.
+> Reverify the service state and current owner authority before applying it.
+> No concurrency capacity claim follows from local benchmarks alone.
+
 The filename records the original review date. This revision reflects the
 current state: the overdue Render balance is resolved, the old `main` build is
 live on the existing paid production service, and the account owner has

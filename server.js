@@ -201,6 +201,12 @@ function runtimeOptionsFromEnv(environment = process.env) {
   return {
     publicMode,
     publicOrigin,
+    ...(parseBooleanFlag(environment.TRIAL_MODE, false) ? {
+      trial: {
+        endsAt: Date.parse(environment.TRIAL_ENDS_AT || ''),
+        maxPulseBytes: Number(environment.TRIAL_MAX_PULSE_BYTES),
+      },
+    } : {}),
     maxConnections: parsePositiveInteger(
       environment.MAX_CONNECTIONS,
       'MAX_CONNECTIONS',
@@ -282,6 +288,7 @@ function createPulsiiServer(options = {}) {
     processEpoch = randomBytes(4).readUInt32BE(0),
     logger = null,
     now = Date.now,
+    trial = null,
   } = options;
 
   const app = express();
@@ -307,6 +314,19 @@ function createPulsiiServer(options = {}) {
     throw new Error(
       'maxGlobalCandidates must be at least maxConnections for fair admission',
     );
+  }
+  // Reserve the unbatched payload cost against the maximum possible audience.
+  // Batching only makes actual pulse payload smaller. This is NOT a provider
+  // billing cap: HTTP, TLS/control traffic and restarts need separate controls.
+  const trialPulseReservation =
+    (BATCH_HEADER_BYTES + PULSE_RECORD_BYTES) * maxConnections;
+  if (trial && (
+    !Number.isSafeInteger(trial.endsAt) || trial.endsAt <= 0 ||
+    !Number.isSafeInteger(trial.maxPulseBytes) ||
+    !Number.isSafeInteger(trialPulseReservation) ||
+    trial.maxPulseBytes < trialPulseReservation
+  )) {
+    throw new Error('Trial requires a valid end time and pulse payload budget');
   }
   if (
     !Number.isInteger(processEpoch) ||
@@ -364,6 +384,9 @@ function createPulsiiServer(options = {}) {
   let candidateQueueDepth = 0;
   let connectedSourcesWithCandidates = 0;
   let isShuttingDown = false;
+  let trialStopped = false;
+  let trialBytesReserved = 0;
+  const trialDrainTimers = new Set();
 
   function metricsSnapshot() {
     const memory = process.memoryUsage();
@@ -372,6 +395,7 @@ function createPulsiiServer(options = {}) {
       uptimeSeconds: Math.max(0, Math.round((now() - startedAt) / 1000)),
       currentConnections: presenceCount,
       peakConnections: metrics.peakConnections,
+      ...(trial ? { trialStopped, trialBytesReserved } : {}),
       pageLoads: metrics.pageLoads,
       connectionsAccepted: metrics.connectionsAccepted,
       connectionsActivated: metrics.connectionsActivated,
@@ -594,6 +618,29 @@ function createPulsiiServer(options = {}) {
   const pulseBatchTimer = setInterval(flushPulseBatch, batchIntervalMs);
   pulseBatchTimer.unref();
 
+  function stopTrial() {
+    if (!trial || trialStopped) return;
+    trialStopped = true;
+    // Budget/expiry stops new acceptance; it never discards accepted work.
+    while (candidateQueueDepth > 0) flushPulseBatch();
+    for (const client of wss.clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.close(4000, 'Session ended');
+      }
+    }
+    const timer = setTimeout(() => {
+      trialDrainTimers.delete(timer);
+      for (const client of wss.clients) client.terminate();
+    }, shutdownDrainMs);
+    timer.unref();
+    trialDrainTimers.add(timer);
+  }
+
+  const trialTimer = trial ? setInterval(() => {
+    if (now() >= trial.endsAt) stopTrial();
+  }, 250) : null;
+  trialTimer?.unref();
+
   let presenceBroadcastTimer = null;
   function broadcastPresence() {
     broadcast(serializePresence(presenceCount));
@@ -609,6 +656,12 @@ function createPulsiiServer(options = {}) {
   }
 
   wss.on('connection', (socket) => {
+    if (trial && (trialStopped || now() >= trial.endsAt)) {
+      stopTrial();
+      socket.on('error', reportError);
+      socket.close(4000, 'Session ended');
+      return;
+    }
     if (presenceCount >= maxConnections) {
       metrics.capacityRejected += 1;
       socket.pulsiiConnected = false;
@@ -655,6 +708,14 @@ function createPulsiiServer(options = {}) {
         return;
       }
 
+      if (trial && (
+        trialStopped || now() >= trial.endsAt ||
+        trialBytesReserved > trial.maxPulseBytes - trialPulseReservation
+      )) {
+        stopTrial();
+        return;
+      }
+
       metrics.pulseCandidates += 1;
       const emptyConnectedSources = Math.max(
         0,
@@ -690,6 +751,7 @@ function createPulsiiServer(options = {}) {
       }
 
       metrics.pulsesAccepted += 1;
+      if (trial) trialBytesReserved += trialPulseReservation;
       socket.pulseCandidates.push(pulse);
       if (!socket.hasCandidateReservation) {
         socket.hasCandidateReservation = true;
@@ -797,6 +859,9 @@ function createPulsiiServer(options = {}) {
     isShuttingDown = true;
     clearInterval(heartbeatTimer);
     clearInterval(pulseBatchTimer);
+    if (trialTimer) clearInterval(trialTimer);
+    for (const timer of trialDrainTimers) clearTimeout(timer);
+    trialDrainTimers.clear();
     if (metricsTimer) clearInterval(metricsTimer);
     if (presenceBroadcastTimer !== null) {
       clearTimeout(presenceBroadcastTimer);

@@ -128,6 +128,9 @@
   }
 
   function reconnectPolicy(code, attempt, randomValue = Math.random()) {
+    if (code === 4000) {
+      return { delayMs: null, state: 'ended', text: 'session ended' };
+    }
     if (code === 1008) {
       return {
         delayMs: jitteredBackoff(
@@ -664,6 +667,7 @@
   let reconnectAttempt = 0;
   let presenceCount = null;
   let connectionStopped = false;
+  let sessionEnded = false;
   let connectionTimeoutTimer = null;
   let stableConnectionTimer = null;
   let resizeFrame = null;
@@ -709,6 +713,7 @@
       crowded: 'Pulsii is live, but the canvas is busy.',
       full: 'The Pulsii canvas is currently full.',
       limited: 'Pulsii paused this connection after too many pulses.',
+      ended: 'This Pulsii session has ended. Pulses are not being shared.',
       live: 'Pulsii is connected and sharing live.',
       offline: 'Pulsii is offline. Pulses are not being shared.',
     };
@@ -1122,8 +1127,15 @@
   }
 
   function scheduleReconnect(closeCode = 1006) {
-    if (connectionStopped || reconnectTimer !== null || !root.navigator.onLine) return;
     const policy = reconnectPolicy(closeCode, reconnectAttempt);
+    if (policy.delayMs === null) {
+      sessionEnded = true;
+      connectionStopped = true;
+      clearReconnectTimer();
+      setStatus(policy.state, policy.text);
+      return;
+    }
+    if (connectionStopped || reconnectTimer !== null || !root.navigator.onLine) return;
     const delay = policy.delayMs;
     reconnectAttempt += 1;
     setStatus(policy.state, policy.text);
@@ -1474,10 +1486,12 @@
 
     root.addEventListener('offline', () => {
       stopConnection();
+      if (sessionEnded) return;
       setStatus('offline', 'offline · not sharing');
     });
 
     root.addEventListener('online', () => {
+      if (sessionEnded) return;
       connectionStopped = false;
       reconnectAttempt = 0;
       connect();
@@ -1488,7 +1502,7 @@
       if (document.hidden) clearPulseCanvas();
     });
     root.addEventListener('pageshow', (event) => {
-      if (!event.persisted) return;
+      if (!event.persisted || sessionEnded) return;
       connectionStopped = false;
       connect();
     });

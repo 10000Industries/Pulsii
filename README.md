@@ -1,5 +1,8 @@
 # Pulsii
 
+See [optional trial controls](docs/trial-controls.md). Historical deployment
+status and permissions must be reverified before following a launch runbook.
+
 Pulsii is one live public canvas. Choose a colour and tap: once the shared
 relay accepts it, one pulse appears for you and everyone else currently
 connected. Pulses fade, and the canvas keeps no history.

@@ -743,6 +743,79 @@ test('caps concurrent connections', async (t) => {
   await closeClient(first);
 });
 
+test('trial budget rejects before acceptance and drains every accepted pulse', async (t) => {
+  const service = await startService({
+    maxConnections: 2,
+    batchIntervalMs: 60_000,
+    trial: { endsAt: Date.now() + 60_000, maxPulseBytes: 104 },
+  });
+  t.after(() => service.close());
+  const sender = await connectClient(service.wsUrl);
+  const peer = await connectClient(service.wsUrl);
+  const senderClosed = once(sender.socket, 'close');
+  const peerClosed = once(peer.socket, 'close');
+  for (let i = 0; i < 3; i += 1) {
+    sender.socket.send(JSON.stringify({
+      type: 'pulse', xNorm: i / 3, yNorm: 0.5, color: '#00d4ff',
+    }));
+  }
+  const [[senderCode], [peerCode]] = await Promise.all([senderClosed, peerClosed]);
+  assert.equal(senderCode, 4000);
+  assert.equal(peerCode, 4000);
+  assert.equal(batchPulses(sender).length, 2);
+  assert.deepEqual(batchPulses(sender), batchPulses(peer));
+  const metrics = service.getMetrics();
+  assert.equal(metrics.pulsesAccepted, 2);
+  assert.equal(metrics.trialBytesReserved, 104);
+  assert.equal(metrics.trialStopped, true);
+  assert.ok(metrics.pulseWireBytes <= 104);
+  const later = new WebSocket(service.wsUrl);
+  later.on('error', () => {});
+  const [laterCode] = await once(later, 'close');
+  assert.equal(laterCode, 4000);
+  assert.equal(service.getPresenceCount(), 0);
+});
+
+test('trial deadline drains pending pulses and stays expired across restart', async (t) => {
+  let currentTime = Date.now();
+  const trial = { endsAt: currentTime + 5000, maxPulseBytes: 10000 };
+  const service = await startService({
+    maxConnections: 2, batchIntervalMs: 60_000, trial, now: () => currentTime,
+  });
+  t.after(() => service.close());
+  const sender = await connectClient(service.wsUrl);
+  sender.socket.send(JSON.stringify({
+    type: 'pulse', xNorm: 0.5, yNorm: 0.5, color: '#00d4ff',
+  }));
+  await waitFor(() => service.getMetrics().pulsesAccepted === 1, 'accepted pulse');
+  const closed = once(sender.socket, 'close');
+  currentTime = trial.endsAt;
+  const [code] = await closed;
+  assert.equal(code, 4000);
+  assert.equal(batchPulses(sender).length, 1);
+  await service.close();
+  const restarted = await startService({ maxConnections: 2, trial, now: () => currentTime });
+  t.after(() => restarted.close());
+  const socket = new WebSocket(restarted.wsUrl);
+  socket.on('error', () => {});
+  const [restartedCode] = await once(socket, 'close');
+  assert.equal(restartedCode, 4000);
+  assert.equal(restarted.getMetrics().pulsesAccepted, 0);
+});
+
+test('trial mode refuses incomplete or insufficient bounds', () => {
+  assert.throws(() => createPulsiiServer({
+    ...runtimeOptionsFromEnv({ TRIAL_MODE: 'true' }),
+  }), /Trial requires/);
+  assert.throws(() => createPulsiiServer({
+    maxConnections: 20, trial: { endsAt: Date.now() + 1000, maxPulseBytes: 1 },
+  }), /Trial requires/);
+  assert.deepEqual(runtimeOptionsFromEnv({
+    TRIAL_MODE: 'true', TRIAL_ENDS_AT: '2026-12-01T19:15:00Z',
+    TRIAL_MAX_PULSE_BYTES: '8388608',
+  }).trial, { endsAt: Date.parse('2026-12-01T19:15:00Z'), maxPulseBytes: 8388608 });
+});
+
 test('keeps aggregate operational metrics without pulse content or identifiers', async (t) => {
   const service = await startService({ deployedCommit: 'abc123' });
   t.after(() => service.close());
