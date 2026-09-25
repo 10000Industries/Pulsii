@@ -348,6 +348,18 @@
   if (!root.document) return;
 
   const document = root.document;
+  // Opt-in inspection on the isolated review host only. No network, storage,
+  // identifiers, or pulse content; ordinary product visits do not run this.
+  const reviewHost = /^pulsii-restoration-review(?:-[a-z0-9-]+)?\.onrender\.com$/.test(root.location.hostname);
+  const reviewParameters = new URLSearchParams(root.location.search);
+  const reviewDiagnostics = reviewHost && reviewParameters.get('diagnostics') === '1';
+  const frameReview = { frames: 0, maxChannel: 0, redViolations: 0, renderMs: 0 };
+  function inspectReviewPixels(pixels) {
+    for (let i = 0; i < pixels.length; i += 4) {
+      frameReview.maxChannel = Math.max(frameReview.maxChannel, pixels[i], pixels[i + 1], pixels[i + 2]);
+      if (pixels[i + 1] < Math.ceil(pixels[i] * 0.65) || pixels[i + 2] < Math.ceil(pixels[i] * 0.65)) frameReview.redViolations += 1;
+    }
+  }
   let canvas = document.getElementById('canvas');
   const stage = document.getElementById('stage');
   const intro = document.getElementById('intro');
@@ -601,6 +613,12 @@
         gl.uniform1f(uniforms.uStatic, profile.static ? 1 : 0);
         gl.uniform1f(uniforms.uIntensity, profile.intensity);
         gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, activePulses.length);
+        if (reviewDiagnostics && frameReview.frames < 24) {
+          const pixels = new Uint8Array(targetCanvas.width * targetCanvas.height * 4);
+          gl.readPixels(0, 0, targetCanvas.width, targetCanvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+          inspectReviewPixels(pixels);
+          frameReview.glError = gl.getError();
+        }
       },
     };
   }
@@ -669,6 +687,7 @@
         const frame = context.getImageData(0, 0, targetCanvas.width, targetCanvas.height);
         limitCanvasRedPixels(frame.data);
         context.putImageData(frame, 0, 0);
+        if (reviewDiagnostics && frameReview.frames < 24) inspectReviewPixels(frame.data);
       },
     };
   }
@@ -676,7 +695,8 @@
   let renderer;
   let webGlInitializationFailed = false;
   try {
-    renderer = createWebGlPulseRenderer(canvas);
+    renderer = reviewDiagnostics && reviewParameters.get('renderer') === '2d'
+      ? null : createWebGlPulseRenderer(canvas);
   } catch (error) {
     webGlInitializationFailed = true;
     renderer = null;
@@ -883,6 +903,12 @@
       Date.now(),
       root.performance.now(),
     );
+    if (reviewDiagnostics) {
+      frameReview.receiptAgeMs = Math.round(root.performance.now() - createdAt);
+      frameReview.clockDifferenceMs = Date.now() - batch.serverTimeMs;
+      frameReview.frames = 0;
+      canvas.dataset.review = JSON.stringify(frameReview);
+    }
     for (const pulse of batch.pulses) addPulse(pulse, createdAt);
     intro?.classList.add('dismissed');
     announcePulseBatch(batch.pulses.length);
@@ -1321,6 +1347,7 @@
       intensity: crowdIntensityScale(pulses.length),
       static: reducedMotion.matches || crowdMode,
     };
+    const renderStarted = reviewDiagnostics ? root.performance.now() : 0;
     renderer.render(
       pulses,
       now,
@@ -1328,6 +1355,14 @@
       pulseRevision,
       { width: cssWidth, height: cssHeight },
     );
+    if (reviewDiagnostics) {
+      frameReview.frames += 1;
+      frameReview.renderer = renderer.kind;
+      frameReview.active = pulses.length;
+      frameReview.ageMs = pulses.length ? Math.round(now - pulses[0].createdAt) : null;
+      frameReview.renderMs = Math.max(frameReview.renderMs, root.performance.now() - renderStarted);
+      canvas.dataset.review = JSON.stringify(frameReview);
+    }
     syncCalmControl(false, crowdMode);
     if (pulses.length > 0) startAnimation();
   }

@@ -9,7 +9,8 @@ const { decodePulseBatch } = require('../lib/protocol');
 const { WEBSOCKET_PATH } = require('../server');
 
 const DEFAULT_SAMPLE_COUNT = 20;
-const DEFAULT_SAMPLE_INTERVAL_MS = 210;
+// Stay within the review service's two-pulse/second per-client refill.
+const DEFAULT_SAMPLE_INTERVAL_MS = 550;
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_LATENCY_GATE_MS = 500;
 const REVIEW_HOST = /^pulsii-restoration-review(?:-[a-z0-9-]+)?\.onrender\.com$/;
