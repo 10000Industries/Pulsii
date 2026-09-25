@@ -650,6 +650,10 @@
           250,
           Math.hypot(viewport.width, viewport.height) * 0.34,
         );
+        let left = viewport.width;
+        let top = viewport.height;
+        let right = 0;
+        let bottom = 0;
 
         for (const pulse of activePulses) {
           const age = pulseAgeSeconds(pulse.createdAt, now);
@@ -672,10 +676,17 @@
           context.lineWidth = profile.calm
             ? 2
             : Math.max(1.25, 3.75 - (progress * 2.25));
+          const centerX = pulse.xNorm * viewport.width;
+          const centerY = pulse.yNorm * viewport.height;
+          const extent = radius + context.lineWidth + 2;
+          left = Math.min(left, centerX - extent);
+          top = Math.min(top, centerY - extent);
+          right = Math.max(right, centerX + extent);
+          bottom = Math.max(bottom, centerY + extent);
           context.beginPath();
           context.arc(
-            pulse.xNorm * viewport.width,
-            pulse.yNorm * viewport.height,
+            centerX,
+            centerY,
             radius,
             0,
             Math.PI * 2,
@@ -684,10 +695,21 @@
         }
         context.globalAlpha = 1;
         context.globalCompositeOperation = 'source-over';
-        const frame = context.getImageData(0, 0, targetCanvas.width, targetCanvas.height);
-        limitCanvasRedPixels(frame.data);
-        context.putImageData(frame, 0, 0);
-        if (reviewDiagnostics && frameReview.frames < 24) inspectReviewPixels(frame.data);
+        // Clear already made everything outside these bounds black. Restrict
+        // the final colour correction to drawn pixels instead of reading and
+        // rewriting the whole display for every small calm ring.
+        const ratioX = targetCanvas.width / viewport.width;
+        const ratioY = targetCanvas.height / viewport.height;
+        const x = Math.max(0, Math.floor(left * ratioX));
+        const y = Math.max(0, Math.floor(top * ratioY));
+        const width = Math.min(targetCanvas.width, Math.ceil(right * ratioX)) - x;
+        const height = Math.min(targetCanvas.height, Math.ceil(bottom * ratioY)) - y;
+        if (width > 0 && height > 0) {
+          const frame = context.getImageData(x, y, width, height);
+          limitCanvasRedPixels(frame.data);
+          context.putImageData(frame, x, y);
+          if (reviewDiagnostics && frameReview.frames < 24) inspectReviewPixels(frame.data);
+        }
       },
     };
   }
