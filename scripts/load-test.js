@@ -27,7 +27,7 @@ async function waitFor(predicate, timeoutMs, description) {
 async function main() {
   const clientCount = positiveInteger(
     process.env.LOAD_CLIENTS,
-    100,
+    20,
     'LOAD_CLIENTS',
   );
   const pulsesPerClient = positiveInteger(

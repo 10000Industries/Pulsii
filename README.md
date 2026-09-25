@@ -1,7 +1,8 @@
 # Pulsii
 
-See [optional trial controls](docs/trial-controls.md). Historical deployment
-status and permissions must be reverified before following a launch runbook.
+Start with the [bounded review procedure](docs/deployment-review.md) and
+[trial controls](docs/trial-controls.md). Historical runbooks do not grant
+current deployment authority or establish capacity.
 
 Pulsii is one live public canvas. Choose a colour and tap: once the shared
 relay accepts it, one pulse appears for you and everyone else currently
@@ -40,12 +41,10 @@ remains connected through the batch.
 Two local load-test modes exercise the real WebSocket server:
 
 ```sh
-npm run load-test
-npm run load-test:fanout
+LOAD_CLIENTS=20 LOAD_PULSES_PER_CLIENT=2 npm run load-test
 ```
 
-Both commands exercise the current batched relay; the second is retained as a
-compatibility alias. Environment variables such as `LOAD_CLIENTS`,
+The fanout command is retained as a compatibility alias. Environment variables such as `LOAD_CLIENTS`,
 `LOAD_PULSES_PER_CLIENT`, and `LOAD_MAX_BATCH_PULSES` control the run. Every
 accepted pulse contribution must reach every continuously connected client, and the harness reports
 batch count, wire bytes, queue depth, and delivery time. These are reproducible
@@ -87,8 +86,8 @@ the isolated `pulsii-restoration-review*.onrender.com` pattern.
 - A subtle presence indicator reports the real connection state; activity is
   never simulated, and a solo connection is labelled honestly.
 - A native share control invites another person to the same public canvas.
-- Pause remains available at all times; paused browsers share taps without
-  displaying local or remote pulse visuals.
+- Pause remains available at all times; paused browsers hide pulses and stop
+  sending taps until resumed.
 - A small About dialog explains public scope, privacy limits, support, and
   feedback.
 - `prefers-reduced-motion` keeps pulses small, faint, and static.
@@ -108,9 +107,9 @@ This is not a private room. A hosting provider may retain ordinary connection or
 
 The restoration branch contains a conservative `render.yaml`: one free
 Frankfurt service, no database or secrets, automatic deploys off, crawling
-disabled, and a 45-connection application cap.
+disabled, a 20-connection application cap, and mandatory trial time/byte bounds.
 
-[Review the August 5 runbook](docs/launch/august-5-runbook.md) before using the
+[Review the current procedure](docs/deployment-review.md) before using the
 [branch-specific Deploy to Render
 flow](https://render.com/deploy?repo=https://github.com/10000Industries/Pulsii/tree/agent/pulsii-restoration).
 

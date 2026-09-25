@@ -11,6 +11,10 @@ const {
   MIN_LATE_VISIBILITY_SECONDS,
   PULSE_LIFETIME_SECONDS,
   PULSE_RECORD_BYTES,
+  MAX_PULSE_ALPHA,
+  PULSE_ATTACK_SECONDS,
+  displayPulseRgb,
+  limitCanvasRedPixels,
   STABLE_CONNECTION_MS,
   canonicalShareUrl,
   connectionLabel,
@@ -72,16 +76,52 @@ test('rejects malformed browser pulses', () => {
   assert.equal(hexToRgb('red'), null);
 });
 
-test('uses a monotonic exponential pulse fade', () => {
+test('fades in smoothly then fades out inside a fixed luminance envelope', () => {
   const start = pulseOpacity(0);
+  const peak = pulseOpacity(PULSE_ATTACK_SECONDS);
   const quarter = pulseOpacity(PULSE_LIFETIME_SECONDS * 0.25);
   const halfway = pulseOpacity(PULSE_LIFETIME_SECONDS * 0.5);
   const end = pulseOpacity(PULSE_LIFETIME_SECONDS);
 
-  assert.ok(start > quarter);
+  assert.equal(start, 0);
+  assert.ok(peak > quarter);
   assert.ok(quarter > halfway);
   assert.ok(halfway > end);
   assert.ok(end > 0);
+  const toLinear = (v) => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  // A white pixel is the highest possible luminance. MAX/lighten compositing
+  // cannot exceed this even with simultaneous pulses of different colours.
+  assert.ok(toLinear(Math.ceil(MAX_PULSE_ALPHA * 255) / 255) < 0.1);
+  for (let age = 0; age < PULSE_LIFETIME_SECONDS; age += 0.001) {
+    assert.ok(pulseOpacity(age) <= MAX_PULSE_ALPHA);
+  }
+  const red = displayPulseRgb({ r: 255, g: 0, b: 0 });
+  assert.ok(red.g > 0 && red.b > 0);
+  // Test every quantised shader red level, including very dark edge pixels.
+  for (let r = 1; r <= Math.ceil(MAX_PULSE_ALPHA * 255); r += 1) {
+    const gb = Math.ceil(r * 0.65);
+    assert.ok(toLinear(r / 255) / (toLinear(r / 255) + 2 * toLinear(gb / 255)) < 0.8);
+  }
+});
+
+test('software edge correction excludes saturated red at every allowed quantised RGB value', () => {
+  const linear = Array.from({length: 256}, (_, i) => {
+    const v = i / 255;
+    return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  });
+  const ceiling = Math.ceil(MAX_PULSE_ALPHA * 255);
+  const pixels = new Uint8ClampedArray((ceiling + 1) ** 3 * 4);
+  let i = 0;
+  for (let r = 0; r <= ceiling; r++) for (let g = 0; g <= ceiling; g++) for (let b = 0; b <= ceiling; b++) {
+    pixels[i++] = r; pixels[i++] = g; pixels[i++] = b; pixels[i++] = 255;
+  }
+  limitCanvasRedPixels(pixels);
+  for (i = 0; i < pixels.length; i += 4) {
+    const r = linear[pixels[i]], g = linear[pixels[i + 1]], b = linear[pixels[i + 2]];
+    assert.ok(Math.max(pixels[i], pixels[i + 1], pixels[i + 2]) <= ceiling);
+    assert.ok(r + g + b === 0 || r / (r + g + b) < 0.8);
+    assert.equal(pixels[i + 3], 255);
+  }
 });
 
 test('uses wall-clock pulse age so suspended tabs cannot replay stale pulses', () => {
@@ -114,6 +154,7 @@ test('bounds reconnect delay and selects explicit close-code policies', () => {
   assert.deepEqual(reconnectPolicy(4000, 0), {
     delayMs: null, state: 'ended', text: 'session ended',
   });
+  assert.notEqual(reconnectPolicy(4001, 0).delayMs, null, 'a readiness timeout must reconnect');
   assert.equal(reconnectDelay(0, 0.5), 500);
   assert.equal(reconnectDelay(1, 0.5), 1000);
   assert.equal(reconnectDelay(20, 0.5), 8000);

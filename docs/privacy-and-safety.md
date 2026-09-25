@@ -34,8 +34,8 @@ The single-process restoration now:
 - orders and deduplicates batches per process epoch and uint32 sequence
 - reserves one candidate slot per connected socket before admitting extras and
   drains sources in one-per-source rounds
-- adapt rendering to crowd density within a verified motion and flash-safety
-  envelope without silently presenting rejected pulses as shared
+- adapt rendering to crowd density, with a motion and flash-safety
+  envelope that still requires rendered verification without silently presenting rejected pulses as shared
 
 This is a one-process design. Fairness is per connection rather than per human,
 and multiple application instances would split the canvas without a shared
@@ -78,7 +78,8 @@ blocker. A GitHub technical note is not a substitute.
 
 - Strict pulse type, coordinate, and colour validation
 - Small WebSocket message limit
-- Per-connection pulse rate limit
+- Per-connection pulse/ping rate limit, process-wide pulse admission, upgrade
+  and HTTP admission limits, trial deadlines and response budgets
 - Bounded global and per-connection candidate queues with an honest busy notice
 - Concurrent-connection cap and slow-client backpressure cutoff
 - Server heartbeat for dead connections
@@ -108,8 +109,8 @@ These controls do not make the review build ready for an uncontrolled crowd.
 Per-connection limiting and reserved queue slots can be multiplied by opening
 many sockets, and Render provides no hard outbound-bandwidth spend cap.
 Source-level abuse controls with a documented short lifetime, deployed
-capacity evidence, durable aggregate monitoring, and alerting still require
-implementation and review.
+capacity evidence and the actual rendered output still require review.
+No background monitoring or alerts are configured by these controls.
 
 If source-level connection or abuse controls use an IP address or another
 online identifier, document the purpose, scope, access, and lifetime before
@@ -162,9 +163,9 @@ a new privacy, consent, security, and public-notice review.
 - Re-run exact-delivery batch tests against the release candidate.
 - Verify compact batched delivery, per-connection fair admission, and explicit
   accepted/shared versus rejected/not-shared semantics on the deployed review.
-- Run staged connection, burst, abuse, reconnect, soak, client-render, and
-  bandwidth tests. Continue beyond 1,000 only while every prior gate passes;
-  set the initial public admission limit below the last fully passing stage.
+- Test the proposed 20-connection trial: shared delivery, abuse, reconnect,
+  client rendering and bounded bandwidth. Larger audiences require new
+  evidence; no hypothetical thousand-participant engineering is required.
 - Test flashing and motion risk with the maximum valid batch stream and
   repeated worst-case spatial input, not only ordinary human tapping.
 - Treat calm mode as a mitigation, not proof of seizure safety or WCAG
@@ -188,3 +189,21 @@ a new privacy, consent, security, and public-notice review.
   has no access to participant data or admission controls.
 - Decide whether public indexing should be enabled; keep it off for the isolated
   preview and controlled beta.
+
+## Current pixel envelope
+
+Both renderers use a 0.30 sRGB per-channel amplitude bound and a 180ms rise.
+MAX/lighten overlap cannot accumulate beyond the brightest channel. The worst
+8-bit channel allowance is 77/255, whose linear luminance is below 0.1 even for
+white. The GPU quantises each fragment and raises green/blue to at least
+ceil(0.65 * red); the software fallback applies the same rule to final pixels,
+including antialiased edges. Thus nonblack corrected pixels stay below the
+0.8 linear-red fraction in the W3C saturated-red definition. The correction
+never raises a channel above the original largest channel.
+
+The software fallback renders at at most one device pixel per CSS pixel to
+bound the cost of final-pixel correction. Its frame time must be measured on
+the hosted review and representative iPad. Exhaustive quantised-colour and
+source-level checks establish the numeric rules, not actual GPU output, whole
+page WCAG conformance or a medical safety guarantee. Check the deployed frames
+before ordinary human review; keep the pause control continuously available.

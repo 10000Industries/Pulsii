@@ -813,7 +813,84 @@ test('trial mode refuses incomplete or insufficient bounds', () => {
   assert.deepEqual(runtimeOptionsFromEnv({
     TRIAL_MODE: 'true', TRIAL_ENDS_AT: '2026-12-01T19:15:00Z',
     TRIAL_MAX_PULSE_BYTES: '8388608',
-  }).trial, { endsAt: Date.parse('2026-12-01T19:15:00Z'), maxPulseBytes: 8388608 });
+    TRIAL_MAX_HTTP_BYTES: '10485760', TRIAL_BOOT_DEADLINE: '2026-12-01T19:00:30Z',
+  }).trial, { endsAt: Date.parse('2026-12-01T19:15:00Z'), maxPulseBytes: 8388608,
+    maxHttpBytes: 10485760, bootDeadline: Date.parse('2026-12-01T19:00:30Z') });
+});
+
+test('aggregate admission rejects bursts before acceptance and recovers', async (t) => {
+  let clock = 1000;
+  const service = await startService({ globalRateBurst: 2, globalRatePerSecond: 2,
+    now: () => clock, batchIntervalMs: 10 });
+  t.after(() => service.close());
+  const a = await connectClient(service.wsUrl, { origin: service.httpUrl });
+  const b = await connectClient(service.wsUrl, { origin: service.httpUrl });
+  const pulse = JSON.stringify({ type: 'pulse', xNorm: 0.5, yNorm: 0.5, color: '#ff0000' });
+  a.socket.send(pulse); b.socket.send(pulse); a.socket.send(pulse);
+  await waitFor(() => service.getMetrics().pulsesRejectedBusy === 1, 'global rejection');
+  await waitFor(() => batchPulses(a).length === 2 && batchPulses(b).length === 2, 'identical accepted batch');
+  assert.equal(service.getMetrics().pulsesAccepted, 2);
+  clock += 500;
+  b.socket.send(pulse);
+  await waitFor(() => batchPulses(a).length === 3 && batchPulses(b).length === 3, 'refilled global admission');
+});
+
+test('ping frames cannot bypass the per-connection outgoing-response limit', async (t) => {
+  const service = await startService({ clientRateBurst: 2, clientRatePerSecond: 0.01 });
+  t.after(() => service.close());
+  const client = await connectClient(service.wsUrl, { origin: service.httpUrl });
+  let pongs = 0;
+  client.socket.on('pong', () => pongs++);
+  const closed = once(client.socket, 'close');
+  client.socket.ping('a'); client.socket.ping('b'); client.socket.ping('c');
+  assert.equal((await closed)[0], 1008);
+  assert.equal(pongs, 2);
+});
+
+test('connection-attempt limit covers repeated upgrades and recovers', async (t) => {
+  let clock = 1000;
+  const service = await startService({ upgradeRateBurst: 1, upgradeRatePerSecond: 1, now: () => clock });
+  t.after(() => service.close());
+  const first = await connectClient(service.wsUrl, { origin: service.httpUrl });
+  await closeClient(first);
+  await assert.rejects(connectClient(service.wsUrl, { origin: service.httpUrl }));
+  assert.equal(service.getMetrics().upgradesRejected, 1);
+  clock += 1000;
+  const recovered = await connectClient(service.wsUrl, { origin: service.httpUrl });
+  await closeClient(recovered);
+});
+
+test('HTTP response budget stops repeated asset requests without a rejection body', async (t) => {
+  const service = await startService({ trial: { endsAt: Date.now() + 60000,
+    maxPulseBytes: 100000, maxHttpBytes: 11000 } });
+  t.after(() => service.close());
+  assert.equal((await request(`${service.httpUrl}/healthz`)).status, 200);
+  assert.equal((await request(`${service.httpUrl}/healthz`)).status, 200);
+  await assert.rejects(request(`${service.httpUrl}/healthz`));
+  assert.equal(service.getMetrics().httpRequestsRejected, 1);
+  assert.equal(service.getMetrics().httpBytesReserved, 10240);
+  assert.equal(service.getMetrics().trialStopped, true);
+});
+
+test('HTTP rate limit covers every path and expires without retaining visitor identifiers', async (t) => {
+  let clock = 1000;
+  const service = await startService({ httpRateBurst: 1, httpRatePerSecond: 1, now: () => clock });
+  t.after(() => service.close());
+  assert.equal((await request(`${service.httpUrl}/healthz`)).status, 200);
+  await assert.rejects(request(`${service.httpUrl}/not-an-asset`));
+  clock += 1000;
+  assert.equal((await request(`${service.httpUrl}/robots.txt`)).status, 200);
+});
+
+test('boot deadline prevents a later restart and expired pages clearly end the session', async (t) => {
+  const clock = Date.now();
+  assert.throws(() => createPulsiiServer({ trial: { endsAt: clock + 60000,
+    maxPulseBytes: 100000, maxHttpBytes: 10000, bootDeadline: clock - 1 } }), /boot deadline/);
+  const service = await startService({ trial: { endsAt: clock - 1, maxPulseBytes: 100000 } });
+  t.after(() => service.close());
+  const ended = await request(service.httpUrl);
+  assert.equal(ended.status, 410);
+  assert.match(ended.body, /session has ended/);
 });
 
 test('keeps aggregate operational metrics without pulse content or identifiers', async (t) => {
@@ -939,6 +1016,10 @@ test('validates public and runtime configuration flags', () => {
       maxConnections: 80,
       clientRateBurst: 8,
       clientRatePerSecond: 4,
+      globalRateBurst: 30,
+      globalRatePerSecond: 20,
+      upgradeRateBurst: 40,
+      upgradeRatePerSecond: 2,
       batchIntervalMs: 40,
       maxGlobalCandidates: 9000,
       maxClientCandidates: 6,

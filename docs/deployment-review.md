@@ -1,165 +1,82 @@
-# Isolated review deployment
+# Bounded review deployment
 
-> Historical runbook: status and approvals below are not current evidence.
-> Reverify the service state and current owner authority before applying it.
-> See [trial controls](trial-controls.md) for the newer optional runtime guard.
+Current procedure, 25 September 2026. This supersedes operational instructions
+in the historical August runbook. Source preservation and local tests are not
+permission to resume hosting, deploy publicly, spend money or promote Pulsii.
 
-## Current production boundary
+## Proposed target
 
-Paying the overdue Render balance resumed the existing paid production service.
-It currently serves the preserved `main` build at `www.pulsii.net`. Keep that
-service and its domains online while the restoration is reviewed.
+One separate Render Free Web Service, `pulsii-restoration-review`, Frankfurt,
+Node 24.14.0, one process, auto-deploy off, no custom domains, disks, database or
+shared environment groups. Existing services and domains are not part of this
+review change. Use the exact reviewed branch commit, not an unverified latest
+head. `render.yaml` describes the proposal; it is not a deployment record.
 
-The isolated review must not reuse or modify:
+- Build: `npm ci && npm test && npm run check`; start: `npm start`.
+- Health: `/healthz`; `PUBLIC_MODE=false`, `PUBLIC_ORIGIN` unset.
+- Maximum 20 connections; 4-pulse client burst, 2/second refill.
+- Global admission: 40-pulse burst, 20/second refill; explicit busy rejection.
+- Upgrade admission: 40-attempt burst, 2/second refill.
+- Candidate queue: 80 total, 4 per source, 80 per 50ms batch.
+- Trial pulse reservation: 5 MiB. HTTP response reservation: 64 MiB (the
+  existing Apple icon alone is approximately 1.4 MiB per cold browser).
+- `TRIAL_BOOT_DEADLINE`: a fixed time just after the planned first startup,
+  initially no more than five minutes after deployment begins.
+- `TRIAL_ENDS_AT`: a fixed end no more than 30 minutes after planned startup.
 
-- `pulsii.net` or `www.pulsii.net`
-- `pulsii.onrender.com`
-- the existing Render production service
-- production DNS, domains, environment groups, or deployment settings
+The generated hostname is publicly reachable but unadvertised and noindex;
+that is not access control or a private room. Its exact URL must be obtained
+from Render after deployment, never guessed and presented as live.
 
-The account owner has approved creation and testing of the isolated review and,
-after the recorded gates pass, promotion of the reviewed build through the
-existing production service. A different paid service, domain migration, DNS
-change, or public announcement still needs to be recorded explicitly before it
-is performed.
+## Before activating
 
-## Review contract
+1. Record approval for this exact review and the accepted residual usage risk.
+2. Read actual shared Free hours, bandwidth, pipeline minutes and active plan.
+   Leave sufficient reserve for other applications. Do not change workspace
+   billing protections, payment methods or unrelated services.
+3. Record commit, service configuration and fixed UTC timestamps. Missing or
+   invalid trial bounds must fail startup. If build time misses the boot window,
+   inspect the failed start before explicitly authorising a new window.
+4. Record the exact dashboard stop action. On failure, unexpected restart or
+   budget exhaustion, suspend this review service. Suspension is the rollback;
+   do not roll back to unsafe/unbounded code or repeatedly rearm the budget.
 
-Create a new one-process Render Web Service from an exact commit on
-`agent/pulsii-restoration`. The root `render.yaml` is deliberately a review
-blueprint, not the production service definition.
+Free compute has no base compute fee but consumes shared allowances. Render
+can bill bandwidth overage when a payment method exists. Application response
+budgets do not cover every platform-generated response or network attack, and
+Render does not provide a separate hard bandwidth-spending cap for this trial.
+No unattended monitoring or automatic suspension is implied by this procedure.
 
-| Setting | Value |
-|---|---|
-| Service | New Web Service |
-| Name | `pulsii-restoration-review` |
-| Source | `10000Industries/Pulsii` |
-| Branch | `agent/pulsii-restoration` |
-| Node | `24.14.0` |
-| Build | `npm ci && npm test && npm run check` |
-| Start | `npm start` |
-| Health check | `/healthz` |
-| Instances | One |
-| Auto-deploy trigger | Off |
-| Plan | Free review instance |
-| Region | Frankfurt |
-| Application connection cap | 45 |
-| Public mode | False |
-| Domain | Generated preview hostname only |
-| Environment groups/secrets | None |
+## Verification order
 
-The review environment is intentionally bounded:
+1. Verify deployed commit, Node version, region, noindex headers and allowlisted
+   assets. Run the existing guarded `review-probe` on the real review URL.
+2. Analyse actual frames from full/calm/reduced-motion profiles and the 2D
+   fallback, including same-position overlap, tiled red/white input, network
+   bursts and renderer restore. Verify brightness/red constraints and measure
+   pause responsiveness. Do not use a human as the flashing stress test.
+3. Bound synthetic checks to 20 connections, 40 contributions, 1 MiB received
+   test budget; then a short ordinary-rate exchange and reconnect. Check each
+   recipient, not just aggregate byte/receipt totals. Stop on failure.
+4. Only after the visual check, give the owner the exact URL and a 5–10 minute
+   physical iPad review: colour, corners/response rhythm, rotation, pause,
+   reduced motion, background/return and terminal session state. Identify an
+   assistant-operated connection as automation, not another human participant.
+5. Record evidence, end time and allowances; suspend the review service.
 
-```text
-PUBLIC_MODE=false
-PUBLIC_ORIGIN unset
-MAX_CONNECTIONS=45
-CLIENT_RATE_BURST=10
-CLIENT_RATE_PER_SECOND=5
-BATCH_INTERVAL_MS=50
-MAX_GLOBAL_CANDIDATES=512
-MAX_CLIENT_CANDIDATES=8
-MAX_BATCH_PULSES=512
-BUSY_RETRY_MS=100
-```
-
-The preview must send `X-Robots-Tag: noindex, nofollow`, serve `robots.txt`
-with `Disallow: /`, use no custom domain, and keep `PUBLIC_ORIGIN` unset. Its
-generated hostname is unadvertised but not private or access-controlled.
-
-## Deployment record
-
-Complete this record from the created service:
-
-| Record | Value |
-|---|---|
-| Provider | Render |
-| Review URL | Pending deployment |
-| Render service ID/name | Pending deployment |
-| Exact commit | Pending deployment |
-| Resolved Node version | Pending deployment |
-| Region and plan | Frankfurt / Free |
-| Created | Pending deployment |
-| Existing production changed | No |
-
-## Functional review
-
-- `/healthz` returns `status: ok`.
-- `/`, styles, scripts, privacy page, icons, manifest, and social image load.
-- Review HTML has no canonical or `og:url` claiming `pulsii.net`.
-- Private source, package, dependency, and documentation paths return 404.
-- The root sends `X-Robots-Tag: noindex, nofollow`; `robots.txt` disallows all.
-- Two browsers show the real connection count.
-- A pulse is delivered in a binary batch exactly once to each healthy test
-  client that remains connected through delivery; dropped connections have no
-  replay history.
-- Malformed messages are ignored; rate abuse is bounded without harming peers.
-- A full queue returns a bounded `busy` response with a retry delay.
-- Reconnection state is visible and delivery resumes after reconnect.
-- Touch creation, colour selection, pause/resume, sharing, About, and privacy
-  interactions work at an iPad viewport.
-- Calm mode starts enabled; device reduced-motion settings keep it enabled.
-- Ordinary canvas use makes no third-party browser request.
-- Aggregate logs contain no pulse content, address, user agent, or identifier.
-
-Warm the Free service before running:
+Example (replace hostname with the actual verified review URL):
 
 ```sh
 npm run review-probe -- https://pulsii-restoration-review-example.onrender.com
-```
-
-Record warm-up time, p95 relay latency, exact-once delivery, and reconnect
-delivery. Free service cold starts can take longer than the probe timeout.
-
-## Guarded deployed load tests
-
-The deployed harness refuses the known production domains and every remote host
-outside `pulsii-restoration-review*.onrender.com`. Every invocation requires an
-explicit received-byte budget.
-
-Example connection-only check:
-
-```sh
-DEPLOYED_LOAD_MODE=connection \
-DEPLOYED_LOAD_CLIENTS=40 \
-DEPLOYED_LOAD_BYTE_BUDGET=1000000 \
+DEPLOYED_LOAD_MODE=all-client-burst DEPLOYED_LOAD_CLIENTS=20 \
+DEPLOYED_LOAD_PULSES=1 DEPLOYED_LOAD_BYTE_BUDGET=1048576 \
 npm run deployed-load-test -- https://pulsii-restoration-review-example.onrender.com
 ```
 
-Supported modes are `connection`, `one-sender`, `all-client-burst`,
-`sustained`, `reconnect`, and `soak`. Configure bounded pulses, duration,
-interval, settlement, and handshake time with:
+## Before university invitations
 
-```text
-DEPLOYED_LOAD_PULSES
-DEPLOYED_LOAD_DURATION_MS
-DEPLOYED_LOAD_INTERVAL_MS
-DEPLOYED_LOAD_SETTLE_MS
-DEPLOYED_LOAD_TIMEOUT_MS
-```
-
-The report includes handshake latency and failures, relay latency, exact
-per-recipient contribution bounds and mismatches, disconnects, busy notices,
-socket errors, and received bytes. A pulse-bearing run fails on any busy notice
-or if even one action recipient misses or duplicates a pulse. The harness
-terminates its sockets and fails when the caller's byte budget would be
-exceeded.
-
-Free is suitable for the 45-client review, not a production-capacity claim. Run
-larger representative tests only on an isolated service temporarily using the
-same instance type and settings proposed for production. Record a fixed egress
-budget before each stage.
-
-## Promotion boundary
-
-Use the existing paid production service and attached domains to avoid a DNS
-cutover. Before deploying, complete the exact sequence and rollback record in
-[the launch runbook](launch/august-5-runbook.md). Do not attach production
-domains to the review service. The first safety promotion keeps
-`PUBLIC_MODE=false` and `PUBLIC_ORIGIN` unset; public crawling and canonical
-metadata remain blocked until the final privacy and launch gates pass.
-
-Render keeps HTTP available during a successful deploy, but WebSockets on the
-old instance close and reconnect. A shared transient broker is required before
-multiple instances or overlapping deploy instances can provide a strictly
-single uninterrupted canvas.
+Close actual rendered/iPad findings; verify the public contact inbox in both
+directions; finish the controller/privacy/legal disclosures and actual hosting
+record; approve a small organiser recipient/message batch and coordinated
+session times. No mass launch, sponsorship sale or capacity beyond the tested
+limit follows from a passing review.

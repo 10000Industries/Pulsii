@@ -3,7 +3,10 @@
 
   const PULSE_LIFETIME_SECONDS = 2.35;
   const MIN_LATE_VISIBILITY_SECONDS = 0.4;
-  const MAX_PULSE_ALPHA = 0.72;
+  // This bounds each sRGB channel even when many pulses overlap. The MAX /
+  // lighten compositors below must not be changed to additive blending.
+  const MAX_PULSE_ALPHA = 0.30;
+  const PULSE_ATTACK_SECONDS = 0.18;
   const DEFAULT_CALM_VISUALS = true;
   const RECONNECT_BASE_MS = 500;
   const RECONNECT_MAX_MS = 8000;
@@ -61,7 +64,28 @@
 
   function pulseOpacity(ageSeconds, lifetimeSeconds = PULSE_LIFETIME_SECONDS) {
     const progress = clamp(ageSeconds / lifetimeSeconds, 0, 1);
-    return MAX_PULSE_ALPHA * Math.exp(-4.2 * progress);
+    const attack = clamp(ageSeconds / PULSE_ATTACK_SECONDS, 0, 1);
+    return MAX_PULSE_ALPHA * attack * Math.exp(-4.2 * progress);
+  }
+
+  function displayPulseRgb(rgb) {
+    // Preserve hue selection while moving saturated reds toward a softer pink.
+    // Applied before both renderers. Quantised edge pixels are checked in the
+    // visual review; this helper alone is not a flash-conformance claim.
+    return { r: rgb.r, g: Math.max(rgb.g, Math.ceil(rgb.r * 0.65)),
+      b: Math.max(rgb.b, Math.ceil(rgb.r * 0.65)) };
+  }
+
+  function limitCanvasRedPixels(pixels) {
+    // Canvas2D antialiasing can round tiny pink edge pixels to pure red.
+    // Correct the final 8-bit pixels, matching the fragment shader's rule.
+    // Blue/green are only raised as far as red, so the brightness ceiling holds.
+    for (let i = 0; i < pixels.length; i += 4) {
+      const floor = Math.ceil(pixels[i] * 0.65);
+      if (pixels[i + 1] < floor) pixels[i + 1] = floor;
+      if (pixels[i + 2] < floor) pixels[i + 2] = floor;
+    }
+    return pixels;
   }
 
   function pulseAgeSeconds(createdAt, now) {
@@ -294,6 +318,10 @@
     MIN_LATE_VISIBILITY_SECONDS,
     DEFAULT_CALM_VISUALS,
     PULSE_LIFETIME_SECONDS,
+    MAX_PULSE_ALPHA,
+    PULSE_ATTACK_SECONDS,
+    displayPulseRgb,
+    limitCanvasRedPixels,
     canonicalShareUrl,
     connectionLabel,
     crowdIntensityScale,
@@ -385,6 +413,8 @@
       stencil: false,
     });
     if (!gl) return null;
+    gl.disable(gl.DITHER);
+    if ('drawingBufferColorSpace' in gl) gl.drawingBufferColorSpace = 'srgb';
 
     const vertexSource = `#version 300 es
       precision highp float;
@@ -424,7 +454,8 @@
         vColor = aColor;
         vRadius = radius;
         vLineWidth = lineWidth;
-        vAlpha = 0.72 * exp(-4.2 * progress) * mix(1.0, 0.28, uCalm) * uIntensity;
+        float attack = clamp(age / ${PULSE_ATTACK_SECONDS}, 0.0, 1.0);
+        vAlpha = ${MAX_PULSE_ALPHA} * attack * exp(-4.2 * progress) * mix(1.0, 0.65, uCalm) * uIntensity;
         vAlive = 1.0 - step(uLifetime, age);
       }
     `;
@@ -446,7 +477,9 @@
         float coverage = 1.0 - smoothstep(innerEdge, outerEdge, distanceFromRing);
         if (coverage <= 0.0) discard;
         float alpha = vAlpha * coverage;
-        outputColor = vec4(vColor * alpha, alpha);
+        vec3 display = floor(vColor * alpha * 255.0 + 0.5);
+        display.gb = max(display.gb, ceil(display.r * 0.65));
+        outputColor = vec4(display / 255.0, alpha);
       }
     `;
 
@@ -573,7 +606,7 @@
   }
 
   function createCanvasPulseRenderer(targetCanvas) {
-    const context = targetCanvas.getContext('2d', { alpha: false });
+    const context = targetCanvas.getContext('2d', { alpha: false, colorSpace: 'srgb', willReadFrequently: true });
     if (!context) return null;
 
     return {
@@ -609,7 +642,7 @@
               ? 18 + (progress * 8)
               : age * radialSpeed;
           const alpha = pulseOpacity(age) *
-            (profile.calm ? 0.28 : 1) *
+            (profile.calm ? 0.65 : 1) *
             profile.intensity;
 
           // Pre-scale colour and draw opaquely so both profiles retain the
@@ -633,6 +666,9 @@
         }
         context.globalAlpha = 1;
         context.globalCompositeOperation = 'source-over';
+        const frame = context.getImageData(0, 0, targetCanvas.width, targetCanvas.height);
+        limitCanvasRedPixels(frame.data);
+        context.putImageData(frame, 0, 0);
       },
     };
   }
@@ -797,7 +833,9 @@
   function resizeCanvas() {
     cssWidth = Math.max(1, root.innerWidth);
     cssHeight = Math.max(1, root.innerHeight);
-    deviceRatio = Math.min(2, root.devicePixelRatio || 1);
+    // Keep the software fallback's final-pixel correction bounded on high-DPI
+    // devices. Physical iPad timing is a release check, not assumed here.
+    deviceRatio = Math.min(renderer.kind === 'canvas2d' ? 1 : 2, root.devicePixelRatio || 1);
 
     canvas.width = Math.round(cssWidth * deviceRatio);
     canvas.height = Math.round(cssHeight * deviceRatio);
@@ -818,8 +856,9 @@
     const normalized = normalizePulse(pulse);
     if (!normalized) return false;
     if (visualsPaused) return true;
-    const rgb = hexToRgb(normalized.color);
-    if (!rgb) return false;
+    const selectedRgb = hexToRgb(normalized.color);
+    if (!selectedRgb) return false;
+    const rgb = displayPulseRgb(selectedRgb);
 
     pulses.push({
       xNorm: normalized.xNorm,
@@ -850,6 +889,15 @@
   }
 
   function sendPulse(xNorm, yNorm) {
+    if (sessionEnded) {
+      setStatus('ended', 'session ended');
+      showActionFeedback('session ended · pulses are not being shared');
+      return;
+    }
+    if (visualsPaused) {
+      showActionFeedback('resume to send and see pulses');
+      return;
+    }
     const pulse = normalizePulse({
       type: 'pulse',
       xNorm,
@@ -1182,7 +1230,7 @@
       connectionTimeoutTimer = null;
       if (socket !== nextSocket) return;
       try {
-        nextSocket.close(4000, 'Ready timeout');
+        nextSocket.close(4001, 'Ready timeout');
       } catch (error) {
         socket = null;
         scheduleReconnect();

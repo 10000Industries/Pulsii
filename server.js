@@ -32,6 +32,12 @@ const DEFAULT_SHUTDOWN_DRAIN_MS = 250;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
 const DEFAULT_PRESENCE_BROADCAST_DELAY_MS = 100;
 const DEFAULT_METRICS_INTERVAL_MS = 60_000;
+const DEFAULT_GLOBAL_RATE_BURST = 40;
+const DEFAULT_GLOBAL_RATE_PER_SECOND = 20;
+const DEFAULT_UPGRADE_RATE_BURST = 40;
+const DEFAULT_UPGRADE_RATE_PER_SECOND = 2;
+const DEFAULT_HTTP_RATE_BURST = 200;
+const DEFAULT_HTTP_RATE_PER_SECOND = 20;
 const WEBSOCKET_PATH = '/live';
 
 const PUBLIC_ASSETS = Object.freeze({
@@ -205,6 +211,8 @@ function runtimeOptionsFromEnv(environment = process.env) {
       trial: {
         endsAt: Date.parse(environment.TRIAL_ENDS_AT || ''),
         maxPulseBytes: Number(environment.TRIAL_MAX_PULSE_BYTES),
+        maxHttpBytes: Number(environment.TRIAL_MAX_HTTP_BYTES),
+        bootDeadline: Date.parse(environment.TRIAL_BOOT_DEADLINE || ''),
       },
     } : {}),
     maxConnections: parsePositiveInteger(
@@ -212,6 +220,10 @@ function runtimeOptionsFromEnv(environment = process.env) {
       'MAX_CONNECTIONS',
       DEFAULT_MAX_CONNECTIONS,
     ),
+    globalRateBurst: parsePositiveInteger(environment.GLOBAL_RATE_BURST, 'GLOBAL_RATE_BURST', DEFAULT_GLOBAL_RATE_BURST),
+    globalRatePerSecond: parsePositiveNumber(environment.GLOBAL_RATE_PER_SECOND, 'GLOBAL_RATE_PER_SECOND', DEFAULT_GLOBAL_RATE_PER_SECOND),
+    upgradeRateBurst: parsePositiveInteger(environment.UPGRADE_RATE_BURST, 'UPGRADE_RATE_BURST', DEFAULT_UPGRADE_RATE_BURST),
+    upgradeRatePerSecond: parsePositiveNumber(environment.UPGRADE_RATE_PER_SECOND, 'UPGRADE_RATE_PER_SECOND', DEFAULT_UPGRADE_RATE_PER_SECOND),
     clientRateBurst: parsePositiveInteger(
       environment.CLIENT_RATE_BURST,
       'CLIENT_RATE_BURST',
@@ -289,10 +301,17 @@ function createPulsiiServer(options = {}) {
     logger = null,
     now = Date.now,
     trial = null,
+    globalRateBurst = DEFAULT_GLOBAL_RATE_BURST,
+    globalRatePerSecond = DEFAULT_GLOBAL_RATE_PER_SECOND,
+    upgradeRateBurst = DEFAULT_UPGRADE_RATE_BURST,
+    upgradeRatePerSecond = DEFAULT_UPGRADE_RATE_PER_SECOND,
+    httpRateBurst = DEFAULT_HTTP_RATE_BURST,
+    httpRatePerSecond = DEFAULT_HTTP_RATE_PER_SECOND,
   } = options;
 
   const app = express();
   app.disable('x-powered-by');
+  app.set('query parser', false);
   const normalizedPublicOrigin = parsePublicOrigin(publicOrigin);
   if (Boolean(publicMode) !== Boolean(normalizedPublicOrigin)) {
     throw new Error('PUBLIC_MODE and PUBLIC_ORIGIN must be configured together');
@@ -328,6 +347,21 @@ function createPulsiiServer(options = {}) {
   )) {
     throw new Error('Trial requires a valid end time and pulse payload budget');
   }
+  // Env-driven trials must include both bounds. Direct callers may omit them
+  // for isolated protocol tests, but cannot supply invalid/expired values.
+  if (trial && trial.maxHttpBytes !== undefined &&
+      (!Number.isSafeInteger(trial.maxHttpBytes) || trial.maxHttpBytes < 8192)) {
+    throw new Error('Trial requires a positive HTTP response budget of at least 8192 bytes');
+  }
+  if (trial && trial.bootDeadline !== undefined && (
+    !Number.isSafeInteger(trial.bootDeadline) ||
+    trial.bootDeadline <= now() || trial.bootDeadline >= trial.endsAt
+  )) {
+    throw new Error('Trial boot deadline must be in the future and before its end');
+  }
+  const takeGlobalPulseToken = createTokenBucket(globalRateBurst, globalRatePerSecond, now);
+  const takeUpgradeToken = createTokenBucket(upgradeRateBurst, upgradeRatePerSecond, now);
+  const takeHttpToken = createTokenBucket(httpRateBurst, httpRatePerSecond, now);
   if (
     !Number.isInteger(processEpoch) ||
     processEpoch < 0 ||
@@ -345,6 +379,35 @@ function createPulsiiServer(options = {}) {
     fs.readFileSync(path.resolve(publicDir, 'index.html'), 'utf8'),
     normalizedPublicOrigin,
   );
+  const assetBytes = Object.fromEntries(Object.entries(PUBLIC_ASSETS).map(([route, filename]) => [
+    route,
+    filename === 'index.html' ? Buffer.byteLength(indexHtml) : fs.statSync(path.resolve(publicDir, filename)).size,
+  ]));
+  let httpBytesReserved = 0;
+  let httpRequestsRejected = 0;
+  let upgradesRejected = 0;
+  // Reserve a whole body plus a generous header allowance before serving it.
+  // Rejected floods receive no application response. Provider/proxy traffic
+  // remains outside this budget; this is not a provider billing guarantee.
+  app.use((request, response, next) => {
+    const reservation = (Object.hasOwn(assetBytes, request.path) ? assetBytes[request.path] : 1024) + 4096;
+    const httpBudgetExhausted = trial?.maxHttpBytes !== undefined &&
+      httpBytesReserved > trial.maxHttpBytes - reservation;
+    if (!takeHttpToken() || httpBudgetExhausted) {
+      httpRequestsRejected += 1;
+      if (httpBudgetExhausted) stopTrial();
+      request.socket.destroy();
+      return;
+    }
+    httpBytesReserved += reservation;
+    if (trial && now() >= trial.endsAt && request.path !== '/healthz') {
+      response.setHeader('Cache-Control', 'no-store');
+      response.setHeader('X-Robots-Tag', 'noindex, nofollow');
+      response.status(410).type('text/plain').send('This Pulsii session has ended.');
+      return;
+    }
+    next();
+  });
 
   app.use((request, response, next) => {
     for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
@@ -396,6 +459,9 @@ function createPulsiiServer(options = {}) {
       currentConnections: presenceCount,
       peakConnections: metrics.peakConnections,
       ...(trial ? { trialStopped, trialBytesReserved } : {}),
+      httpBytesReserved,
+      httpRequestsRejected,
+      upgradesRejected,
       pageLoads: metrics.pageLoads,
       connectionsAccepted: metrics.connectionsAccepted,
       connectionsActivated: metrics.connectionsActivated,
@@ -473,15 +539,39 @@ function createPulsiiServer(options = {}) {
   app.use((request, response) => {
     response.status(404).type('text/plain').send('Not found');
   });
+  app.use((error, request, response, next) => {
+    reportError(error);
+    if (response.headersSent) { request.socket.destroy(); return; }
+    response.status(400).type('text/plain').send('Invalid request');
+  });
 
   const server = http.createServer(app);
+  server.maxConnections = maxConnections * 8 + 64;
+  server.on('clientError', (error, socket) => socket.destroy());
+  server.requestTimeout = 10_000;
+  server.headersTimeout = 10_000;
+  server.keepAliveTimeout = 5_000;
+  server.maxRequestsPerSocket = 100;
   const wss = new WebSocketServer({
+    autoPong: false,
     clientTracking: true,
     maxPayload: maxPayloadBytes,
     path: WEBSOCKET_PATH,
     perMessageDeflate: false,
-    server,
+    noServer: true,
     verifyClient: (info) => isSameOriginWebSocket(info, publicMode),
+  });
+  // Admit before ws parses the path/headers, so malformed upgrades cannot
+  // bypass the process-wide response limit.
+  server.on('upgrade', (request, socket, head) => {
+    if (isShuttingDown || !takeUpgradeToken()) {
+      upgradesRejected += 1;
+      socket.destroy();
+      return;
+    }
+    wss.handleUpgrade(request, socket, head, (client) => {
+      wss.emit('connection', client, request);
+    });
   });
 
   function reportError(error) {
@@ -656,9 +746,9 @@ function createPulsiiServer(options = {}) {
   }
 
   wss.on('connection', (socket) => {
+    socket.on('error', reportError);
     if (trial && (trialStopped || now() >= trial.endsAt)) {
       stopTrial();
-      socket.on('error', reportError);
       socket.close(4000, 'Session ended');
       return;
     }
@@ -687,11 +777,22 @@ function createPulsiiServer(options = {}) {
       now,
     );
 
+    socket.on('ping', (data) => {
+      if (socket.readyState !== WebSocket.OPEN) return;
+      if (!takeClientRateToken()) {
+        metrics.clientRateLimited += 1;
+        socket.close(1008, 'Rate limit exceeded');
+        return;
+      }
+      socket.pong(data, false, (error) => { if (error) reportError(error); });
+    });
+
     socket.on('pong', () => {
       socket.isAlive = true;
     });
 
     socket.on('message', (data, isBinary) => {
+      if (socket.readyState !== WebSocket.OPEN) return;
       if (!takeClientRateToken()) {
         metrics.clientRateLimited += 1;
         socket.close(1008, 'Rate limit exceeded');
@@ -733,7 +834,8 @@ function createPulsiiServer(options = {}) {
         isShuttingDown ||
         socket.pulseCandidates.length >= maxClientCandidates ||
         candidateQueueDepth >=
-          maxGlobalCandidates - reservedForOtherSources
+          maxGlobalCandidates - reservedForOtherSources ||
+        !takeGlobalPulseToken()
       ) {
         metrics.pulsesRejectedBusy += 1;
         const queuedBatches = Math.max(
@@ -768,8 +870,6 @@ function createPulsiiServer(options = {}) {
         metrics.connectionsActivated += 1;
       }
     });
-
-    socket.on('error', reportError);
 
     let connectionClosed = false;
     socket.on('close', () => {

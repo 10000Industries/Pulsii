@@ -4,8 +4,7 @@
 > Reverify the service state and current owner authority before applying it.
 > No concurrency capacity claim follows from local benchmarks alone.
 
-The filename records the original review date. This revision reflects the
-current state: the overdue Render balance is resolved, the old `main` build is
+The filename records the original review date. The following paragraph describes the historical August state, not current authority: the overdue Render balance is resolved, the old `main` build is
 live on the existing paid production service, and the account owner has
 approved the isolated review plus promotion through that existing service after
 the gates below pass.
