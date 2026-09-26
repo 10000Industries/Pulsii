@@ -36,6 +36,14 @@ maximum speed simultaneously. Each browser/device renders the incoming canvas.
 Run `npm run capacity-test` for a local check using production settings, or pass
 the isolated review origin after `--`. It refuses production targets, uses the
 browser immediate protocol, opens up to 1,000 clients at 40 joins/second, sends
-one pulse from everyone, then 400 aggregate pulses/second for 20 seconds. Every
+one pulse from everyone, then targets 400 aggregate pulses/second for 20 seconds. Every
 peer checks unique pulse receipt and excludes its own echo. Bounds: 150 seconds
 and 100 MB received. It does not measure browser painting or long-term capacity.
+
+The 26 September capacity check delivered all 8,991,000 expected peer records
+from 9,000 pulses to 1,000 connections. On isolated Render Free compute (0.15
+CPU/512 MB), the generator and server shared that allowance; actual sustained
+input was about 105 pulses/second, not the targeted 400. Delivery passed, but
+the timing target did not. Local testing achieved 400/second. This supports the
+1,000-connection ceiling, not a guarantee of smooth animation on 1,000 devices.
+See [capacity evidence](docs/capacity-2026-09-26.md) for limits and results.
