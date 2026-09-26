@@ -51,3 +51,13 @@ claim of smooth 20-browser rendering on every device.
 The same 3 MiB pulse reservation budget, 40 MiB HTTP budget and fixed end time
 still terminate the review. Faster use consumes the existing budget faster;
 no paid plan or larger spending allowance is implied.
+
+
+## No browser tap throttle / native-touch correction
+
+The later touch correction supersedes the browser token bucket above: local
+pulses draw without any per-second gate. Network flood protection is burst 256,
+refill 120 per connection, 128 queued candidates per source; global, HTTP,
+connection, payload and finite byte-budget controls are retained. Busy/offline
+sharing does not discard local input, and is labelled local only. Server
+protections are not a promise of unlimited network or rendering capacity.

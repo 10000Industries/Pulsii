@@ -18,6 +18,9 @@ html, body {
   padding: 0;
   background: #000;
   touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 /* Hidden native colour input; triggered programmatically */
@@ -118,3 +121,15 @@ html, body {
 }
 #coffee-card a { color: inherit; font-size: 12px; }
 #color-handle:focus-visible { outline: 2px solid white; outline-offset: 3px; }
+
+/* Visible only when the owner explicitly opens ?diagnostics=1. */
+#input-diagnostics {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  color: #aaa;
+  font: 11px monospace;
+  pointer-events: none;
+  z-index: 10;
+}

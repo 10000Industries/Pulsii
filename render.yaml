@@ -16,9 +16,9 @@ services:
       - key: MAX_CONNECTIONS
         value: "20"
       - key: CLIENT_RATE_BURST
-        value: "40"
+        value: "256"
       - key: CLIENT_RATE_PER_SECOND
-        value: "25"
+        value: "120"
       - key: GLOBAL_RATE_BURST
         value: "800"
       - key: GLOBAL_RATE_PER_SECOND
@@ -32,7 +32,7 @@ services:
       - key: MAX_GLOBAL_CANDIDATES
         value: "640"
       - key: MAX_CLIENT_CANDIDATES
-        value: "32"
+        value: "128"
       - key: MAX_BATCH_PULSES
         value: "640"
       - key: BUSY_RETRY_MS

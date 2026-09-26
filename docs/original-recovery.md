@@ -13,11 +13,13 @@ and brief). We preserve the shipped implementation, not an interpretation of it.
 
 Narrow compatibility fixes: `/live` binary batch decoder; immediate local draw
 with negotiated `pulsii-immediate-v1` so own events are not echoed twice;
-exclusive pointer/touch listeners; bounded reconnect; terminal trial expiry;
+native touchstart with changedTouches on touch devices, non-touch pointer input; bounded reconnect; terminal trial expiry;
 clear stale canvas on hidden tabs; at most 1024 active pulses; minimal status
 only for connection/rate problems; a privacy/contact link in the support card.
-The fast-tap update removes the 520ms cooldown: browser admission is a
-20-pulse burst with 20/second refill; the relay and queue limits match it. Busy or disconnected states explicitly say sharing failed.
+The browser has no tap-rate limit or cooldown. Every new contact draws locally
+before attempting network sharing. Busy/disconnected/backpressured sharing
+reports local-only feedback and never suppresses that local pulse. Server
+traffic and finite trial budgets remain bounded. Terminal expiry stops input.
 Local drawing is optimistic; it is not a delivery receipt.
 
 Server source-file allowlist, strict input validation, dependencies, connection,
@@ -34,3 +36,24 @@ or device performance claim is made for this recovery.
 Owner confirmed on 26 September that this version looks restored, then requested
 much faster pulsing. That acceptance concerns the restored appearance, not the
 old two-per-second restriction. Original visuals remain the reference.
+
+
+## iPad missed-tap report
+
+Owner reported alternating/missing quick taps after bb639d5. Logs during the
+reported interval showed 49 received pulse candidates, all accepted, zero
+busy rejections and zero rate disconnects. This does not establish which input
+or rendering behavior caused missing local feedback on the physical device.
+
+The touch-specific correction processes every changed contact via non-passive
+touchstart, suppresses browser gesture defaults, and avoids a second draw from
+compatibility pointer events. Mouse/trackpad uses pointerdown. Redundant viewport
+resize no longer clears the canvas. Local drawing is independent of network
+readiness, backpressure, busy notices and tap rate. Versioned asset URLs prevent
+reuse of the old bundle on a fresh navigation. ?diagnostics=1 shows actual
+input/local/painted/sent/received counts for a device recording if needed.
+Apple touch guidance: https://developer.apple.com/library/archive/documentation/AppleApplications/Reference/SafariWebContent/HandlingEvents/HandlingEvents.html
+Touch event specification: https://www.w3.org/TR/touch-events/
+
+The iPad-specific cause and fix require owner verification. Desktop mouse tests
+and mocked touch events are not a substitute for the physical device.

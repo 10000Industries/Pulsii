@@ -8,7 +8,7 @@
   <meta name="description" content="A shared live canvas of fading colour pulses.">
   <!-- PULSII_PUBLIC_META -->
   <link rel="icon" type="image/x-icon" href="favicon.ico">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=touch-20260926-1">
 </head>
 <body>
   <!-- Full-screen drawing surface -->
@@ -18,6 +18,7 @@
   <input id="color-picker" type="color" aria-label="Pulse colour">
   <div id="color-handle" role="button" tabindex="0" aria-label="Choose pulse colour"></div>
 
+  <output id="input-diagnostics" hidden></output>
   <div id="connection-status" role="status" hidden></div>
   <!-- Buy Me a Coffee prompt (hidden by default) -->
   <div id="coffee-card" aria-live="polite">
@@ -27,6 +28,6 @@
     <button id="coffee-button">Buy me a coffee</button>
   </div>
 
-  <script src="script.js"></script>
+  <script src="script.js?v=touch-20260926-1"></script>
 </body>
 </html>

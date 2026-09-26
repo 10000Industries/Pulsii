@@ -41,12 +41,13 @@ let socket;
 let reconnectTimer = null;
 let reconnectAttempt = 0;
 let trialEnded = false;
-// No fixed gap between taps: a small bucket admits rapid/multi-finger bursts.
-const CLIENT_PULSE_BURST = 20;
-const CLIENT_PULSES_PER_SECOND = 20;
+const CLIENT_BUILD = 'touch-20260926-1';
+const USE_NATIVE_TOUCH = 'ontouchstart' in window;
 const MAX_ACTIVE_PULSES = 1024;
-let pulseTokens = CLIENT_PULSE_BURST;
-let pulseTokenTime = performance.now();
+let inputCount = 0;
+let localCount = 0;
+let paintedCount = 0;
+let diagnosticsLastPaint = 0;
 let busyUntil = 0;
 let statusTimer = null;
 let sentCount = 0;
@@ -70,9 +71,19 @@ function temporaryStatus(text) {
 
 function reportDiagnostics() {
   if (!diagnostics) return;
+  canvas.dataset.build = CLIENT_BUILD;
+  canvas.dataset.inputMode = USE_NATIVE_TOUCH ? 'touchstart' : 'pointerdown';
+  canvas.dataset.inputs = String(inputCount);
+  canvas.dataset.local = String(localCount);
+  canvas.dataset.painted = String(paintedCount);
   canvas.dataset.sent = String(sentCount);
   canvas.dataset.received = String(receivedCount);
   canvas.dataset.activePulses = String(pulses.length);
+  const readout = document.getElementById('input-diagnostics');
+  if (readout) {
+    readout.hidden = false;
+    readout.textContent = `${CLIENT_BUILD} · ${USE_NATIVE_TOUCH ? 'touch' : 'pointer'} · input ${inputCount} · local ${localCount} · painted ${paintedCount} · sent ${sentCount} · received ${receivedCount}`;
+  }
 }
 
 const BATCH_HEADER_BYTES = 19;
@@ -141,9 +152,13 @@ let deviceRatio = window.devicePixelRatio || 1;
 // Scale canvas to device pixels so circles stay sharp on HiDPI displays, while drawing in CSS units.
 function resizeCanvas() {
   const viewport = window.visualViewport;
-  cssWidth = viewport ? viewport.width : window.innerWidth;
-  cssHeight = viewport ? viewport.height : window.innerHeight;
-  deviceRatio = window.devicePixelRatio || 1;
+  const nextWidth = viewport ? viewport.width : window.innerWidth;
+  const nextHeight = viewport ? viewport.height : window.innerHeight;
+  const nextRatio = window.devicePixelRatio || 1;
+  if (cssWidth === nextWidth && cssHeight === nextHeight && deviceRatio === nextRatio) return;
+  cssWidth = nextWidth;
+  cssHeight = nextHeight;
+  deviceRatio = nextRatio;
 
   canvas.width = Math.round(cssWidth * deviceRatio);
   canvas.height = Math.round(cssHeight * deviceRatio);
@@ -222,27 +237,29 @@ function spawnPulse(normX, normY, colorHex) {
 // Preserve immediate local drawing. The negotiated protocol sends only peers'
 // contributions back, so the original server-echo duplication cannot occur.
 function sendPulse(normX, normY, colorHex) {
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
-    showConnectionStatus(trialEnded ? 'review ended' : 'reconnecting — not sharing');
+  if (trialEnded) {
+    showConnectionStatus('review ended');
     return;
   }
-  const now = performance.now();
-  if (now < busyUntil) {
-    temporaryStatus('canvas busy — try again shortly');
-    return;
-  }
-  pulseTokens = Math.min(CLIENT_PULSE_BURST,
-    pulseTokens + Math.max(0, now - pulseTokenTime) * CLIENT_PULSES_PER_SECOND / 1000);
-  pulseTokenTime = now;
-  if (pulseTokens < 1) {
-    temporaryStatus('pulsing too quickly — try again shortly');
-    return;
-  }
-  pulseTokens -= 1;
-  socket.send(JSON.stringify({ type: 'pulse', xNorm: normX, yNorm: normY, color: colorHex }));
+  // The local interaction never waits on a timer, token bucket or network.
   spawnPulse(normX, normY, colorHex);
-  sentCount += 1;
+  localCount += 1;
   reportDiagnostics();
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    showConnectionStatus('local only — reconnecting');
+    return;
+  }
+  if (performance.now() < busyUntil || socket.bufferedAmount > 64 * 1024) {
+    temporaryStatus('local only — sharing busy');
+    return;
+  }
+  try {
+    socket.send(JSON.stringify({ type: 'pulse', xNorm: normX, yNorm: normY, color: colorHex }));
+    sentCount += 1;
+    reportDiagnostics();
+  } catch {
+    showConnectionStatus('local only — reconnecting');
+  }
 }
 
 // Local bot pulse generator for testing overlaps/timing (does not broadcast by default).
@@ -304,20 +321,28 @@ function openColorPicker() {
 }
 
 function handleCanvasPointerDown(event) {
-  if (colorPicker.isDraggingPicker || event.target !== canvas) return;
+  if (event.target !== canvas) return;
+  // On touch browsers, native touchstart owns finger/Pencil input. Pointer
+  // events remain for mouse/trackpad; this prevents duplicate compatibility input.
+  if (USE_NATIVE_TOUCH && (event.pointerType === 'touch' || event.pointerType === 'pen')) return;
+  if (event.button !== undefined && event.button !== 0) return;
+  if (event.cancelable) event.preventDefault();
   const { normX, normY } = getPointerPosition(event);
-  const colorHex = colorPicker.input.value;
-  sendPulse(normX, normY, colorHex);
+  inputCount += 1;
+  sendPulse(normX, normY, colorPicker.input.value);
 }
 
 function handleCanvasTouchStart(event) {
-  if (colorPicker.isDraggingPicker) return;
-  if (event.touches.length === 0) return;
   if (event.target !== canvas) return;
-  const touch = event.touches[0];
-  const { normX, normY } = getTouchPosition(touch);
-  const colorHex = colorPicker.input.value;
-  sendPulse(normX, normY, colorHex);
+  // Handle raw contacts before browser tap/double-tap gesture interpretation.
+  // changedTouches identifies NEW fingers, rather than repeating touches[0].
+  if (event.cancelable) event.preventDefault();
+  for (const touch of event.changedTouches) {
+    if (touch.target && touch.target !== canvas) continue;
+    const { normX, normY } = getTouchPosition(touch);
+    inputCount += 1;
+    sendPulse(normX, normY, colorPicker.input.value);
+  }
 }
 
 // Colour picker drag handlers (separate from canvas pulses).
@@ -528,8 +553,16 @@ function animate(now) {
     ctx.arc(x, y, pulse.radius, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
+    if (diagnostics && !pulse.painted) {
+      pulse.painted = true;
+      paintedCount += 1;
+    }
   }
 
+  if (diagnostics && now - diagnosticsLastPaint >= 250) {
+    diagnosticsLastPaint = now;
+    reportDiagnostics();
+  }
   requestAnimationFrame(animate);
 }
 
@@ -548,12 +581,16 @@ function init() {
     colorPicker.handle.addEventListener('pointerup', handlePickerPointerUp);
     colorPicker.handle.addEventListener('pointercancel', handlePickerPointerCancel);
   } else {
-    canvas.addEventListener('touchstart', handleCanvasTouchStart, { passive: false });
     colorPicker.handle.addEventListener('touchstart', handlePickerTouchStart, { passive: false });
     colorPicker.handle.addEventListener('touchmove', handlePickerTouchMove, { passive: false });
     colorPicker.handle.addEventListener('touchend', handlePickerTouchEnd, { passive: false });
     colorPicker.handle.addEventListener('touchcancel', handlePickerTouchCancel, { passive: false });
   }
+  if (USE_NATIVE_TOUCH || !window.PointerEvent) {
+    canvas.addEventListener('touchstart', handleCanvasTouchStart, { passive: false });
+    canvas.addEventListener('touchmove', (event) => { if (event.cancelable) event.preventDefault(); }, { passive: false });
+  }
+  if (!window.PointerEvent) canvas.addEventListener('mousedown', handleCanvasPointerDown);
   colorPicker.handle.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openColorPicker(); }
   });
@@ -577,6 +614,7 @@ function init() {
   });
   window.addEventListener('pageshow', connectWebSocket);
   connectWebSocket();
+  reportDiagnostics();
 
   // Toggle this flag above to true to enable the local test bot.
   if (BOT_ENABLED) {
