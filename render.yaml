@@ -16,13 +16,13 @@ services:
       - key: MAX_CONNECTIONS
         value: "20"
       - key: CLIENT_RATE_BURST
-        value: "4"
-      - key: CLIENT_RATE_PER_SECOND
-        value: "2"
-      - key: GLOBAL_RATE_BURST
         value: "40"
+      - key: CLIENT_RATE_PER_SECOND
+        value: "25"
+      - key: GLOBAL_RATE_BURST
+        value: "800"
       - key: GLOBAL_RATE_PER_SECOND
-        value: "20"
+        value: "500"
       - key: UPGRADE_RATE_BURST
         value: "40"
       - key: UPGRADE_RATE_PER_SECOND
@@ -30,11 +30,11 @@ services:
       - key: BATCH_INTERVAL_MS
         value: "50"
       - key: MAX_GLOBAL_CANDIDATES
-        value: "80"
+        value: "640"
       - key: MAX_CLIENT_CANDIDATES
-        value: "4"
+        value: "32"
       - key: MAX_BATCH_PULSES
-        value: "80"
+        value: "640"
       - key: BUSY_RETRY_MS
         value: "100"
       - key: TRIAL_MODE
@@ -44,6 +44,6 @@ services:
       - key: TRIAL_BOOT_DEADLINE
         sync: false
       - key: TRIAL_MAX_PULSE_BYTES
-        value: "5242880"
+        value: "3145728"
       - key: TRIAL_MAX_HTTP_BYTES
-        value: "67108864"
+        value: "41943040"

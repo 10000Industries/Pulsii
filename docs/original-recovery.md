@@ -14,10 +14,10 @@ and brief). We preserve the shipped implementation, not an interpretation of it.
 Narrow compatibility fixes: `/live` binary batch decoder; immediate local draw
 with negotiated `pulsii-immediate-v1` so own events are not echoed twice;
 exclusive pointer/touch listeners; bounded reconnect; terminal trial expiry;
-clear stale canvas on hidden tabs; at most 64 active pulses; minimal status
+clear stale canvas on hidden tabs; at most 1024 active pulses; minimal status
 only for connection/rate problems; a privacy/contact link in the support card.
-The isolated review allows one local pulse every 520 ms to fit its existing
-2/s rate limit. Busy or disconnected states explicitly say sharing failed.
+The fast-tap update removes the 520ms cooldown: browser admission is a
+20-pulse burst with 20/second refill; the relay and queue limits match it. Busy or disconnected states explicitly say sharing failed.
 Local drawing is optimistic; it is not a delivery receipt.
 
 Server source-file allowlist, strict input validation, dependencies, connection,
@@ -29,3 +29,8 @@ is implied. The owner must judge the corrected experience before launch.
 Old ring/luminance fixture results apply only to the rejected renderer. They
 are not evidence about the restored glow renderer. No compliance certification
 or device performance claim is made for this recovery.
+
+
+Owner confirmed on 26 September that this version looks restored, then requested
+much faster pulsing. That acceptance concerns the restored appearance, not the
+old two-per-second restriction. Original visuals remain the reference.

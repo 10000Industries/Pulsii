@@ -41,7 +41,12 @@ let socket;
 let reconnectTimer = null;
 let reconnectAttempt = 0;
 let trialEnded = false;
-let lastSendTime = -Infinity;
+// No fixed gap between taps: a small bucket admits rapid/multi-finger bursts.
+const CLIENT_PULSE_BURST = 20;
+const CLIENT_PULSES_PER_SECOND = 20;
+const MAX_ACTIVE_PULSES = 1024;
+let pulseTokens = CLIENT_PULSE_BURST;
+let pulseTokenTime = performance.now();
 let busyUntil = 0;
 let statusTimer = null;
 let sentCount = 0;
@@ -204,7 +209,7 @@ function randomColor() {
 // Create a new pulse at normalized coordinates (0-1) so it maps across screen sizes.
 function spawnPulse(normX, normY, colorHex) {
   const rgb = hexToRgb(colorHex);
-  if (pulses.length >= 64) pulses.shift();
+  if (pulses.length >= MAX_ACTIVE_PULSES) pulses.shift();
   pulses.push({
     normX,
     normY,
@@ -222,13 +227,18 @@ function sendPulse(normX, normY, colorHex) {
     return;
   }
   const now = performance.now();
-  // Review server admits two pulses per second per browser. Keep its limit
-  // explicit, without disconnecting a visitor who taps more quickly.
-  if (now < busyUntil || now - lastSendTime < 520) {
-    temporaryStatus('leave a moment between pulses');
+  if (now < busyUntil) {
+    temporaryStatus('canvas busy — try again shortly');
     return;
   }
-  lastSendTime = now;
+  pulseTokens = Math.min(CLIENT_PULSE_BURST,
+    pulseTokens + Math.max(0, now - pulseTokenTime) * CLIENT_PULSES_PER_SECOND / 1000);
+  pulseTokenTime = now;
+  if (pulseTokens < 1) {
+    temporaryStatus('pulsing too quickly — try again shortly');
+    return;
+  }
+  pulseTokens -= 1;
   socket.send(JSON.stringify({ type: 'pulse', xNorm: normX, yNorm: normY, color: colorHex }));
   spawnPulse(normX, normY, colorHex);
   sentCount += 1;

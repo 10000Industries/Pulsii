@@ -97,9 +97,9 @@ test('registers one input family and dragging the colour control does not send p
 test('bounds review sending, reports busy sharing and stops reconnecting at expiry', () => {
   const b=browser(); const s=b.sockets[0]; s.open();
   b.run("sendPulse(0.5,0.5,'#ffffff'); sendPulse(0.5,0.5,'#ffffff');");
-  assert.equal(s.sent.length,1);
-  b.setTime(520); b.run("sendPulse(0.5,0.5,'#ffffff');");
-  assert.equal(s.sent.length,2);
+  assert.equal(s.sent.length,2, 'no fixed cooldown between taps');
+  b.setTime(50); b.run("sendPulse(0.5,0.5,'#ffffff');");
+  assert.equal(s.sent.length,3);
   s.listeners.message({data:JSON.stringify({type:'busy',retryAfterMs:1000})});
   assert.match(b.element('connection-status').textContent,/not shared/);
   const before=b.timers.length;
@@ -116,4 +116,31 @@ test('hidden tabs clear stale pulses and malformed binary does not draw', () => 
   assert.equal(b.run('pulses.length'),0);
   b.sockets[0].listeners.message({data:new ArrayBuffer(2)});
   assert.equal(b.run('pulses.length'),0);
+});
+
+
+test('admits twenty simultaneous taps and twenty per second without losing or delaying local pulses', () => {
+  const b = browser(); const s = b.sockets[0]; s.open();
+  const c = b.element('canvas');
+  for (let i = 0; i < 20; i++) c.listeners.pointerdown({target:c,clientX:100+i,clientY:200,pointerId:i,pointerType:'touch'});
+  assert.equal(s.sent.length,20);
+  assert.equal(b.run('pulses.length'),20);
+  // Refill rather than a mandatory cooldown: each 50ms tap is accepted.
+  for (let i = 1; i <= 60; i++) {
+    b.setTime(i*50);
+    c.listeners.pointerdown({target:c,clientX:100+i,clientY:200});
+  }
+  assert.equal(s.sent.length,80);
+  assert.equal(b.run('pulses.length'),80, 'old 64-pulse cap must not truncate this activity');
+});
+
+test('bounds scripted flooding and refills without disconnecting the browser', () => {
+  const b=browser(); const s=b.sockets[0]; s.open();
+  b.run("for(let i=0;i<100;i++) sendPulse(0.5,0.5,'#123456')");
+  assert.equal(s.sent.length,20);
+  assert.equal(b.run('pulses.length'),20);
+  assert.match(b.element('connection-status').textContent,/too quickly/);
+  b.setTime(50); b.run("sendPulse(0.5,0.5,'#123456')");
+  assert.equal(s.sent.length,21);
+  assert.equal(s.readyState,1);
 });

@@ -1085,3 +1085,32 @@ test('immediate drawing clients receive peers only, including identical simultan
   assert.equal(batchPulses(first)[0].color,'#ff0000');
   assert.equal(service.getMetrics().pulseDeliveryAttempts,4);
 });
+
+test('review configuration delivers rapid bursts and sustained 20/s from all twenty clients', async (t) => {
+  const yaml = require('node:fs').readFileSync(require.resolve('../render.yaml'), 'utf8');
+  const env = Object.fromEntries([...yaml.matchAll(/key: (\w+)\n\s+value: "([^"]+)"/g)].map(m=>[m[1],m[2]]));
+  env.TRIAL_ENDS_AT = new Date(Date.now()+60000).toISOString();
+  env.TRIAL_BOOT_DEADLINE = new Date(Date.now()+10000).toISOString();
+  const service = await startService(runtimeOptionsFromEnv(env));
+  t.after(() => service.close());
+  const clients = await Promise.all(Array.from({length:20},()=>connectClient(service.wsUrl,{protocol:'pulsii-immediate-v1'})));
+  const colors = clients.map((_,i)=>'#'+(i+1).toString(16).padStart(6,'0'));
+  const send = (client,i) => client.socket.send(JSON.stringify({type:'pulse',xNorm:i/20,yNorm:0.5,color:colors[i]}));
+  for (let burst=0;burst<20;burst++) clients.forEach(send);
+  for (let tick=0;tick<40;tick++) {
+    await delay(50);
+    clients.forEach(send);
+  }
+  const expected = 19*60;
+  await waitFor(()=>clients.every(c=>batchPulses(c).length===expected),'all rapid peer contributions',3000);
+  for (let i=0;i<clients.length;i++) {
+    assert.equal(clients[i].socket.readyState,WebSocket.OPEN);
+    assert.equal(messagesOfType(clients[i],'busy').length,0);
+    const received = batchPulses(clients[i]);
+    assert.equal(received.filter(p=>p.color===colors[i]).length,0,'no own echo');
+    for (let j=0;j<clients.length;j++) if(i!==j) assert.equal(received.filter(p=>p.color===colors[j]).length,60);
+  }
+  assert.equal(service.getMetrics().pulsesAccepted,1200);
+  assert.equal(service.getMetrics().pulsesRejectedBusy,0);
+  assert.equal(service.getMetrics().clientRateLimited,0);
+});

@@ -23,7 +23,7 @@ are disconnected without an application response. Default HTTP admission is a
 an unlimited automatic-pong response path. HTTP header/request timeouts are
 10 seconds; idle keepalive is five seconds, with 100 requests per socket.
 
-Global pulse admission defaults to burst 40, refill 20/second; env keys are
+Global pulse admission defaults to burst 800, refill 500/second; env keys are
 `GLOBAL_RATE_BURST` and `GLOBAL_RATE_PER_SECOND`. Upgrade keys are
 `UPGRADE_RATE_BURST` and `UPGRADE_RATE_PER_SECOND`. These are process-wide,
 not per IP, and keep no additional visitor identifier. They bound legitimate
@@ -35,3 +35,19 @@ for all TLS/framing, provider-generated responses, control traffic or restarts.
 The single process does not coordinate with overlapping deploy instances. Never
 rearm during a live gathering, and never infer public capacity from local load
 measurements. See the [review procedure](deployment-review.md).
+
+
+## Fast-tap review configuration (26 September 2026)
+
+The browser has no fixed per-tap cooldown. It admits a burst of 20 pulses and
+refills 20 tokens/second, so rapid and simultaneous multi-finger taps draw
+immediately. The server allows burst 40/refill 25 per second per connection
+for delivery jitter; global burst 800/refill 500 covers the 20-browser review.
+Queues allow 32 per source, 640 globally and 640 per 50ms batch. The browser
+retains at most 1024 active pulses, replacing the previous 64-pulse truncation.
+The original glow renderer is unchanged; these are admission bounds, not a
+claim of smooth 20-browser rendering on every device.
+
+The same 3 MiB pulse reservation budget, 40 MiB HTTP budget and fixed end time
+still terminate the review. Faster use consumes the existing budget faster;
+no paid plan or larger spending allowance is implied.
