@@ -1,82 +1,32 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
+  <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Pulsii</title>
   <meta name="theme-color" content="#000000">
-  <meta name="description" content="One public canvas, shared live. Tap to send a fading pulse of colour across it.">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Pulsii">
-  <meta property="og:title" content="Pulsii">
-  <meta property="og:description" content="One shared moment. Tap to send a fading pulse of colour across the live canvas.">
-  <meta property="og:type" content="website">
+  <meta name="description" content="A shared live canvas of fading colour pulses.">
   <!-- PULSII_PUBLIC_META -->
-  <meta property="og:image" content="/og-image.png">
-  <meta property="og:image:width" content="1200">
-  <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="Overlapping coloured pulse rings on a black canvas">
-  <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Pulsii">
-  <meta name="twitter:description" content="One shared moment. Tap to send a fading pulse of colour across the live canvas.">
-  <meta name="twitter:image" content="/og-image.png">
-  <meta name="twitter:image:alt" content="Overlapping coloured pulse rings on a black canvas">
-  <title>Pulsii — one shared moment</title>
-  <link rel="icon" href="/favicon.ico" sizes="any">
-  <link rel="apple-touch-icon" href="/favicon.png">
-  <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="stylesheet" href="/style.css">
+  <link rel="icon" type="image/x-icon" href="favicon.ico">
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <main id="stage" aria-label="Pulsii shared canvas">
-    <canvas id="canvas" role="button" tabindex="0" aria-label="Tap anywhere, or press Enter, to send a coloured pulse">
-      Pulsii is a visual shared canvas. Use the controls after the canvas to pause visuals, invite someone, or read about the experience.
-    </canvas>
+  <!-- Full-screen drawing surface -->
+  <canvas id="canvas"></canvas>
 
-    <section id="intro" aria-labelledby="intro-title">
-      <h1 id="intro-title">Pulsii</h1>
-      <p>tap to start a rhythm.<br>leave space for a reply.</p>
-      <p class="ephemeral">one public canvas, shared live.<br>pulses fade. the canvas keeps no history.</p>
-    </section>
+  <!-- Continuous colour selector (native colour input gives a hue wheel in most browsers) -->
+  <input id="color-picker" type="color" aria-label="Pulse colour">
+  <div id="color-handle" role="button" tabindex="0" aria-label="Choose pulse colour"></div>
 
-    <div id="presence-controls">
-      <div id="connection-status" data-state="connecting" aria-live="off">
-        <span class="status-dot" aria-hidden="true"></span>
-        <span id="status-text">connecting</span>
-      </div>
-      <div id="live-actions" aria-label="Canvas controls">
-        <button id="calm-button" class="quiet-control" type="button" aria-pressed="true" aria-label="Toggle calm pulse visuals" aria-describedby="visual-profile-status">calm</button>
-        <button id="pause-button" class="quiet-control" type="button" aria-pressed="false">pause</button>
-        <button id="invite-button" class="quiet-control" type="button" disabled>invite</button>
-        <button id="about-button" class="quiet-control" type="button" aria-haspopup="dialog">about</button>
-      </div>
-    </div>
+  <div id="connection-status" role="status" hidden></div>
+  <!-- Buy Me a Coffee prompt (hidden by default) -->
+  <div id="coffee-card" aria-live="polite">
+    <button id="coffee-close" aria-label="Close support prompt">×</button>
+    <p>Enjoying Pulsii?</p>
+    <a href="/privacy">Privacy and contact</a>
+    <button id="coffee-button">Buy me a coffee</button>
+  </div>
 
-    <div id="action-feedback" role="status" aria-live="polite"></div>
-    <div id="connection-announcer" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
-    <div id="pulse-activity" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
-    <div id="visual-profile-status" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">Calm pulse visuals are on.</div>
-
-    <input id="color-picker" type="color" value="#00d4ff" tabindex="-1" aria-label="Pulse colour">
-    <button id="color-handle" type="button" aria-label="Choose pulse colour"></button>
-    <span id="color-hint" aria-hidden="true">colour · tap or drag</span>
-
-    <dialog id="about-dialog" aria-labelledby="about-title">
-      <button id="about-close" type="button" aria-label="Close about Pulsii">close</button>
-      <h2 id="about-title">one shared moment.</h2>
-      <p>Pulsii is one public canvas, shared live. Choose a colour, tap, and see how someone responds. Try answering a rhythm or making a pattern together. Your pulse appears when the server shares it; a busy or disconnected canvas tells you when it cannot share.</p>
-      <p>No account, name, message, or canvas history. This is not a private room. Pulsii records aggregate operational counters without pulse positions, colours, or identifiers; the hosting provider may also keep ordinary connection logs.</p>
-      <p>Coloured rings move and fade. Calm starts on with smaller, dimmer rings; your device's reduced-motion setting keeps them still. Brightness is limited and reds are softened in every mode. Pause hides the rings and stops your taps until you resume.</p>
-      <p>A project of 10000 Industries. For feedback, privacy questions or an abuse report, email <a href="mailto:hello@pulsii.net">hello@pulsii.net</a>. Tell us approximately when the issue happened; please do not send other visitors' personal information.</p>
-      <div class="about-links">
-        <a href="https://buymeacoffee.com/10000industries" target="_blank" rel="noopener noreferrer">support Pulsii</a>
-        <a href="/privacy">privacy</a>
-        <a href="https://github.com/10000Industries/Pulsii" target="_blank" rel="noopener noreferrer">source and feedback</a>
-      </div>
-    </dialog>
-  </main>
-
-  <noscript>Pulsii needs JavaScript to draw and share pulses.</noscript>
-  <script src="/script.js"></script>
+  <script src="script.js"></script>
 </body>
 </html>

@@ -635,6 +635,7 @@ function createPulsiiServer(options = {}) {
   }
 
   const readyCandidateSources = new Set();
+  const pulseSources = new WeakMap();
   let batchSequence = 0;
 
   function nextBatchSequence() {
@@ -678,27 +679,33 @@ function createPulsiiServer(options = {}) {
     const pulses = takeFairPulseBatch();
     if (pulses.length === 0) return null;
 
-    const payload = encodePulseBatch({
+    const batchHeader = {
       processEpoch,
       sequence: nextBatchSequence(),
       serverTimeMs: Math.max(0, Math.trunc(now())),
-      pulses,
-    });
+    };
+    const payload = encodePulseBatch({ ...batchHeader, pulses });
     let deliveryAttempts = 0;
     for (const client of wss.clients) {
       if (
         client.readyState !== WebSocket.OPEN ||
         !client.pulsiiConnected
       ) continue;
-      if (!send(client, payload, { binary: true }, () => {
+      const deliveredPulses = client.protocol === 'pulsii-immediate-v1'
+        ? pulses.filter((pulse) => pulseSources.get(pulse) !== client)
+        : pulses;
+      if (deliveredPulses.length === 0) continue;
+      const deliveredPayload = deliveredPulses.length === pulses.length ? payload :
+        encodePulseBatch({ ...batchHeader, pulses: deliveredPulses });
+      if (!send(client, deliveredPayload, { binary: true }, () => {
         metrics.batchDeliveries += 1;
-        metrics.pulseDeliveries += pulses.length;
-        metrics.pulseWireBytes += payload.length;
+        metrics.pulseDeliveries += deliveredPulses.length;
+        metrics.pulseWireBytes += deliveredPayload.length;
       })) continue;
       deliveryAttempts += 1;
       metrics.batchDeliveryAttempts += 1;
-      metrics.pulseDeliveryAttempts += pulses.length;
-      metrics.pulseWireBytesAttempted += payload.length;
+      metrics.pulseDeliveryAttempts += deliveredPulses.length;
+      metrics.pulseWireBytesAttempted += deliveredPayload.length;
     }
 
     metrics.batchesShared += 1;
@@ -854,6 +861,7 @@ function createPulsiiServer(options = {}) {
 
       metrics.pulsesAccepted += 1;
       if (trial) trialBytesReserved += trialPulseReservation;
+      pulseSources.set(pulse, socket);
       socket.pulseCandidates.push(pulse);
       if (!socket.hasCandidateReservation) {
         socket.hasCandidateReservation = true;

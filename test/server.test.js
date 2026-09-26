@@ -64,8 +64,9 @@ function request(url) {
   });
 }
 
-async function connectClient(url, options) {
-  const socket = new WebSocket(url, options);
+async function connectClient(url, options = {}) {
+  const { protocol, ...wsOptions } = options;
+  const socket = protocol ? new WebSocket(url, protocol, wsOptions) : new WebSocket(url, wsOptions);
   const messages = [];
   const batches = [];
   socket.on('message', (data, isBinary) => {
@@ -135,11 +136,8 @@ test('serves only the explicit public surface with security headers', async (t) 
   );
   assert.doesNotMatch(root.body, /rel="canonical"/);
   assert.doesNotMatch(root.body, /property="og:url"/);
-  assert.match(root.body, /property="og:image" content="\/og-image\.png"/);
-  assert.match(
-    root.body,
-    /id="calm-button"[^>]+aria-pressed="true"[^>]*>calm<\/button>/,
-  );
+  assert.match(root.body, /id="color-handle"/);
+  assert.doesNotMatch(root.body, /id="intro"|id="calm-button"/);
 
   for (const route of EXPECTED_PUBLIC_ROUTES) {
     const response = await request(`${service.httpUrl}${route}`);
@@ -181,10 +179,6 @@ test('enables crawling and absolute metadata only in explicit public mode', asyn
   assert.match(
     root.body,
     /property="og:url" content="https:\/\/pulsii\.net\/"/,
-  );
-  assert.match(
-    root.body,
-    /property="og:image" content="https:\/\/pulsii\.net\/og-image\.png"/,
   );
 
   const robots = await request(`${service.httpUrl}/robots.txt`);
@@ -1073,4 +1067,21 @@ test('validates configured ports', () => {
   assert.equal(parsePort('3000'), 3000);
   assert.throws(() => parsePort('not-a-port'), /Invalid PORT/);
   assert.throws(() => parsePort('65536'), /Invalid PORT/);
+});
+
+test('immediate drawing clients receive peers only, including identical simultaneous pulses', async (t) => {
+  const service = await startService({batchIntervalMs: 1000});
+  t.after(() => service.close());
+  const first = await connectClient(service.wsUrl, {protocol:'pulsii-immediate-v1'});
+  const second = await connectClient(service.wsUrl, {protocol:'pulsii-immediate-v1'});
+  const observer = await connectClient(service.wsUrl);
+  const pulse = JSON.stringify({type:'pulse',xNorm:0.5,yNorm:0.5,color:'#ff0000'});
+  first.socket.send(pulse); second.socket.send(pulse);
+  await waitFor(() => service.getMetrics().pulsesAccepted === 2, 'two accepted pulses');
+  service.flushPulseBatch();
+  await waitFor(() => batchPulses(observer).length === 2, 'observer delivery');
+  assert.equal(batchPulses(first).length,1);
+  assert.equal(batchPulses(second).length,1);
+  assert.equal(batchPulses(first)[0].color,'#ff0000');
+  assert.equal(service.getMetrics().pulseDeliveryAttempts,4);
 });

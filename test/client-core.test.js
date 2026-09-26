@@ -1,254 +1,119 @@
 'use strict';
-
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const {
-  BATCH_HEADER_BYTES,
-  BATCH_PROTOCOL_VERSION,
-  CONNECTION_TIMEOUT_MS,
-  CROWD_VISUAL_THRESHOLD,
-  DEFAULT_CALM_VISUALS,
-  MIN_LATE_VISIBILITY_SECONDS,
-  PULSE_LIFETIME_SECONDS,
-  PULSE_RECORD_BYTES,
-  MAX_PULSE_ALPHA,
-  PULSE_ATTACK_SECONDS,
-  displayPulseRgb,
-  limitCanvasRedPixels,
-  STABLE_CONNECTION_MS,
-  canonicalShareUrl,
-  connectionLabel,
-  crowdIntensityScale,
-  decodePulseBatch,
-  hexToRgb,
-  isNewBatchSequence,
-  isTapGesture,
-  normalizePulse,
-  nextCrowdMode,
-  pulseAgeSeconds,
-  pulseCreatedAtForBatch,
-  pulseOpacity,
-  reconnectDelay,
-  reconnectPolicy,
-  shouldUseCalmVisuals,
-} = require('../script');
+const vm = require('node:vm');
+const fs = require('node:fs');
 const { encodePulseBatch } = require('../lib/protocol');
+const source = fs.readFileSync(require.resolve('../script'), 'utf8');
 
-test('normalizes a canonical browser pulse', () => {
-  assert.deepEqual(
-    normalizePulse({
-      type: 'pulse',
-      xNorm: 0.25,
-      yNorm: 0.75,
-      color: '#A1B2C3',
-    }),
-    {
-      type: 'pulse',
-      xNorm: 0.25,
-      yNorm: 0.75,
-      color: '#a1b2c3',
-    },
-  );
-
-  assert.deepEqual(hexToRgb('#a1b2c3'), { r: 161, g: 178, b: 195 });
-});
-
-test('rejects malformed browser pulses', () => {
-  for (const value of [
-    null,
-    [],
-    { type: 'presence', count: 2 },
-    { type: 'pulse', xNorm: Number.NaN, yNorm: 0.5, color: '#112233' },
-    { type: 'pulse', xNorm: -0.01, yNorm: 0.5, color: '#112233' },
-    { type: 'pulse', xNorm: 0.5, yNorm: 1.01, color: '#112233' },
-    { type: 'pulse', xNorm: 0.5, yNorm: 0.5, color: '#fff' },
-    {
-      type: 'pulse',
-      xNorm: 0.5,
-      yNorm: 0.5,
-      color: '#112233',
-      extra: true,
-    },
-  ]) {
-    assert.equal(normalizePulse(value), null);
+function browser({ pointer = true } = {}) {
+  const elements = new Map();
+  const drawing = [];
+  const ctx = new Proxy({}, { get(target, key) {
+    if (key in target) return target[key];
+    if (key === 'createRadialGradient') return (...args) => {
+      drawing.push(['gradient', ...args]);
+      return { addColorStop(...stop) { drawing.push(['stop', ...stop]); } };
+    };
+    return (...args) => drawing.push([key, ...args]);
+  } });
+  const element = (id) => {
+    if (!elements.has(id)) elements.set(id, {
+      style: {}, dataset: {}, value: '#123456', hidden: false, listeners: {},
+      classList: { add() {}, remove() {} },
+      addEventListener(name, fn) { this.listeners[name] = fn; },
+      getContext: () => ctx,
+      getBoundingClientRect: () => ({left:0, top:0}),
+      setPointerCapture() {}, releasePointerCapture() {}, focus() {}, showPicker() {},
+    });
+    return elements.get(id);
+  };
+  const sockets = [];
+  class Socket {
+    static OPEN = 1;
+    constructor(url, protocol) { this.url = url; this.protocol = protocol; this.readyState = 0; this.listeners = {}; this.sent = []; sockets.push(this); }
+    addEventListener(name, fn) { this.listeners[name] = fn; }
+    send(data) { this.sent.push(JSON.parse(data)); }
+    close() { this.readyState = 3; }
+    open() { this.readyState = 1; this.listeners.open(); }
   }
+  let clock = 0;
+  const timers = [];
+  const document = { getElementById: element, hidden:false, listeners:{}, addEventListener(name, fn) { this.listeners[name] = fn; } };
+  const window = {location:{protocol:'https:',host:'pulsii-restoration-review.onrender.com',hostname:'pulsii-restoration-review.onrender.com',search:'?diagnostics=1'},devicePixelRatio:2,innerWidth:800,innerHeight:600,PointerEvent:pointer?function(){}:undefined,addEventListener(){},open(){}};
+  const context = vm.createContext({document,window,WebSocket:Socket,URLSearchParams,ArrayBuffer,DataView,performance:{now:()=>clock},requestAnimationFrame(){},setTimeout(fn,ms){timers.push({fn,ms}); return timers.length;},clearTimeout(){},setInterval(){},clearInterval(){},console});
+  vm.runInContext(source, context);
+  return {context,element,ctx,drawing,sockets,timers,document,setTime(t){clock=t;},run(code){return vm.runInContext(code,context);}};
+}
 
-  assert.equal(hexToRgb('red'), null);
+test('restored browser draws locally without waiting for an echo and receives peer batches', () => {
+  const b = browser(); const socket = b.sockets[0]; socket.open();
+  assert.equal(socket.protocol, 'pulsii-immediate-v1');
+  assert.ok(socket.url.endsWith('/live'));
+  const canvas=b.element('canvas');
+  canvas.listeners.pointerdown({target:canvas,clientX:200,clientY:300});
+  assert.equal(b.run('pulses.length'),1);
+  assert.equal(socket.sent.length,1);
+  assert.equal(socket.sent[0].xNorm,0.25);
+  assert.equal(socket.sent[0].yNorm,0.5);
+  const payload=encodePulseBatch({processEpoch:1,sequence:1,serverTimeMs:1000,pulses:[{type:'pulse',xNorm:0.75,yNorm:0.5,color:'#ab1234'}]});
+  socket.listeners.message({data:payload.buffer.slice(payload.byteOffset,payload.byteOffset+payload.byteLength)});
+  assert.equal(b.run('pulses.length'),2);
+  assert.equal(canvas.dataset.received,'1');
 });
 
-test('fades in smoothly then fades out inside a fixed luminance envelope', () => {
-  const start = pulseOpacity(0);
-  const peak = pulseOpacity(PULSE_ATTACK_SECONDS);
-  const quarter = pulseOpacity(PULSE_LIFETIME_SECONDS * 0.25);
-  const halfway = pulseOpacity(PULSE_LIFETIME_SECONDS * 0.5);
-  const end = pulseOpacity(PULSE_LIFETIME_SECONDS);
+test('preserves the original expanding radial glow and trailing fade', () => {
+  const b = browser();
+  b.run("spawnPulse(0.5,0.5,'#ff0000'); animate(50);");
+  assert.equal(b.run('pulses[0].radius'),21);
+  assert.equal(b.run('PULSE_LIFETIME'),1.4);
+  assert.equal(b.run('MAX_PULSE_ALPHA'),0.22);
+  assert.deepEqual(b.drawing.find(x=>x[0]==='gradient'),['gradient',400,300,0,400,300,21]);
+  assert.deepEqual(b.drawing.filter(x=>x[0]==='stop'),[
+    ['stop',0,'rgba(255, 0, 0, 0.9)'],['stop',0.4,'rgba(255, 0, 0, 0.5)'],['stop',1,'rgba(255, 0, 0, 0)'],
+  ]);
+  assert.equal(b.ctx.globalCompositeOperation,'source-over');
+  assert.ok(Math.abs(b.ctx.globalAlpha - 0.22*Math.sin(Math.PI*0.05/1.4))<1e-12);
+  assert.match(source,/rgba\(0, 0, 0, 0\.05\)/);
+});
 
-  assert.equal(start, 0);
-  assert.ok(peak > quarter);
-  assert.ok(quarter > halfway);
-  assert.ok(halfway > end);
-  assert.ok(end > 0);
-  const toLinear = (v) => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
-  // A white pixel is the highest possible luminance. MAX/lighten compositing
-  // cannot exceed this even with simultaneous pulses of different colours.
-  assert.ok(toLinear(Math.ceil(MAX_PULSE_ALPHA * 255) / 255) < 0.1);
-  for (let age = 0; age < PULSE_LIFETIME_SECONDS; age += 0.001) {
-    assert.ok(pulseOpacity(age) <= MAX_PULSE_ALPHA);
+test('registers one input family and dragging the colour control does not send pulses', () => {
+  for (const pointer of [true,false]) {
+    const b=browser({pointer}); const c=b.element('canvas');
+    assert.equal(Boolean(c.listeners.pointerdown),pointer);
+    assert.equal(Boolean(c.listeners.touchstart),!pointer);
   }
-  const red = displayPulseRgb({ r: 255, g: 0, b: 0 });
-  assert.ok(red.g > 0 && red.b > 0);
-  // Test every quantised shader red level, including very dark edge pixels.
-  for (let r = 1; r <= Math.ceil(MAX_PULSE_ALPHA * 255); r += 1) {
-    const gb = Math.ceil(r * 0.65);
-    assert.ok(toLinear(r / 255) / (toLinear(r / 255) + 2 * toLinear(gb / 255)) < 0.8);
-  }
+  const b=browser(); b.sockets[0].open();
+  const h=b.element('color-handle');
+  const event={clientX:44,clientY:556,pointerId:1,stopPropagation(){},preventDefault(){}};
+  h.listeners.pointerdown(event);
+  h.listeners.pointermove({...event,clientX:144,clientY:456});
+  h.listeners.pointerup({...event,clientX:144,clientY:456});
+  assert.equal(h.style.left,'124px');
+  assert.equal(h.style.top,'436px');
+  assert.equal(b.sockets[0].sent.length,0);
 });
 
-test('software edge correction excludes saturated red at every allowed quantised RGB value', () => {
-  const linear = Array.from({length: 256}, (_, i) => {
-    const v = i / 255;
-    return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
-  });
-  const ceiling = Math.ceil(MAX_PULSE_ALPHA * 255);
-  const pixels = new Uint8ClampedArray((ceiling + 1) ** 3 * 4);
-  let i = 0;
-  for (let r = 0; r <= ceiling; r++) for (let g = 0; g <= ceiling; g++) for (let b = 0; b <= ceiling; b++) {
-    pixels[i++] = r; pixels[i++] = g; pixels[i++] = b; pixels[i++] = 255;
-  }
-  limitCanvasRedPixels(pixels);
-  for (i = 0; i < pixels.length; i += 4) {
-    const r = linear[pixels[i]], g = linear[pixels[i + 1]], b = linear[pixels[i + 2]];
-    assert.ok(Math.max(pixels[i], pixels[i + 1], pixels[i + 2]) <= ceiling);
-    assert.ok(r + g + b === 0 || r / (r + g + b) < 0.8);
-    assert.equal(pixels[i + 3], 255);
-  }
+test('bounds review sending, reports busy sharing and stops reconnecting at expiry', () => {
+  const b=browser(); const s=b.sockets[0]; s.open();
+  b.run("sendPulse(0.5,0.5,'#ffffff'); sendPulse(0.5,0.5,'#ffffff');");
+  assert.equal(s.sent.length,1);
+  b.setTime(520); b.run("sendPulse(0.5,0.5,'#ffffff');");
+  assert.equal(s.sent.length,2);
+  s.listeners.message({data:JSON.stringify({type:'busy',retryAfterMs:1000})});
+  assert.match(b.element('connection-status').textContent,/not shared/);
+  const before=b.timers.length;
+  s.readyState=3; s.listeners.close({code:4000});
+  assert.equal(b.timers.length,before);
+  assert.equal(b.element('connection-status').textContent,'review ended');
+  b.run('connectWebSocket()'); assert.equal(b.sockets.length,1);
 });
 
-test('uses wall-clock pulse age so suspended tabs cannot replay stale pulses', () => {
-  assert.equal(pulseAgeSeconds(1_000, 1_000), 0);
-  assert.equal(pulseAgeSeconds(1_000, 3_350), 2.35);
-  assert.equal(pulseAgeSeconds(5_000, 4_000), 0);
-  assert.equal(pulseAgeSeconds(Number.NaN, 4_000), 0);
-});
-
-test('uses server time for a shared phase while preserving a late visible tail', () => {
-  assert.equal(
-    pulseCreatedAtForBatch(10_000, 10_050, 500),
-    450,
-  );
-  assert.equal(
-    pulseCreatedAtForBatch(10_000, 10_900, 8_000),
-    7_100,
-  );
-  assert.equal(
-    pulseCreatedAtForBatch(10_000, 20_000, 30_000),
-    30_000 - ((PULSE_LIFETIME_SECONDS - MIN_LATE_VISIBILITY_SECONDS) * 1000),
-  );
-  assert.equal(
-    pulseCreatedAtForBatch(11_000, 10_000, 500),
-    500,
-  );
-});
-
-test('bounds reconnect delay and selects explicit close-code policies', () => {
-  assert.deepEqual(reconnectPolicy(4000, 0), {
-    delayMs: null, state: 'ended', text: 'session ended',
-  });
-  assert.notEqual(reconnectPolicy(4001, 0).delayMs, null, 'a readiness timeout must reconnect');
-  assert.equal(reconnectDelay(0, 0.5), 500);
-  assert.equal(reconnectDelay(1, 0.5), 1000);
-  assert.equal(reconnectDelay(20, 0.5), 8000);
-  assert.equal(reconnectDelay(20, 0), 6000);
-  assert.equal(reconnectDelay(20, 1), 8000);
-  assert.deepEqual(reconnectPolicy(1008, 0, 0.5), {
-    delayMs: 10_000,
-    state: 'limited',
-    text: 'paused · too many pulses',
-  });
-  assert.deepEqual(reconnectPolicy(1013, 0, 0.5), {
-    delayMs: 15_000,
-    state: 'full',
-    text: 'canvas full · retrying',
-  });
-  assert.equal(CONNECTION_TIMEOUT_MS, 12_000);
-  assert.equal(STABLE_CONNECTION_MS, 30_000);
-  assert.equal(DEFAULT_CALM_VISUALS, true);
-  assert.equal(shouldUseCalmVisuals(true, false), true);
-  assert.equal(shouldUseCalmVisuals(false, true), true);
-  assert.equal(shouldUseCalmVisuals(false, false), false);
-  assert.equal(
-    shouldUseCalmVisuals(false, false, CROWD_VISUAL_THRESHOLD),
-    true,
-  );
-  assert.equal(crowdIntensityScale(180), 1);
-  assert.ok(crowdIntensityScale(10_000) >= 0.08);
-  assert.ok(crowdIntensityScale(10_000) < 0.2);
-  assert.equal(nextCrowdMode(false, CROWD_VISUAL_THRESHOLD - 1), false);
-  assert.equal(nextCrowdMode(false, CROWD_VISUAL_THRESHOLD), true);
-  assert.equal(nextCrowdMode(true, CROWD_VISUAL_THRESHOLD - 1), true);
-  assert.equal(nextCrowdMode(true, 1), true);
-  assert.equal(nextCrowdMode(true, 0), false);
-});
-
-test('decodes compact server pulse batches for the browser', () => {
-  const encoded = encodePulseBatch({
-    processEpoch: 123,
-    sequence: 7,
-    serverTimeMs: 1_786_140_000_000,
-    pulses: [
-      { type: 'pulse', xNorm: 0, yNorm: 1, color: '#A1B2C3' },
-      { type: 'pulse', xNorm: 0.25, yNorm: 0.75, color: '#00d4ff' },
-    ],
-  });
-  const decoded = decodePulseBatch(encoded);
-
-  assert.equal(BATCH_PROTOCOL_VERSION, 1);
-  assert.equal(BATCH_HEADER_BYTES, 19);
-  assert.equal(PULSE_RECORD_BYTES, 7);
-  assert.equal(decoded.processEpoch, 123);
-  assert.equal(decoded.sequence, 7);
-  assert.equal(decoded.serverTimeMs, 1_786_140_000_000);
-  assert.equal(decoded.count, 2);
-  assert.deepEqual(decoded.pulses[0], {
-    type: 'pulse',
-    xNorm: 0,
-    yNorm: 1,
-    color: '#a1b2c3',
-  });
-  assert.ok(Math.abs(decoded.pulses[1].xNorm - 0.25) < 0.00002);
-  assert.ok(Math.abs(decoded.pulses[1].yNorm - 0.75) < 0.00002);
-  assert.equal(decoded.pulses[1].color, '#00d4ff');
-  assert.equal(decodePulseBatch(encoded.subarray(0, encoded.length - 1)), null);
-  const zeroSequence = Buffer.from(encoded);
-  zeroSequence.writeUInt32BE(0, 5);
-  assert.equal(decodePulseBatch(zeroSequence), null);
-});
-
-test('accepts only forward batch sequences, including the uint32 wrap', () => {
-  assert.equal(isNewBatchSequence(0, 1), true);
-  assert.equal(isNewBatchSequence(7, 8), true);
-  assert.equal(isNewBatchSequence(7, 7), false);
-  assert.equal(isNewBatchSequence(8, 7), false);
-  assert.equal(isNewBatchSequence(0xffff_ffff, 1), true);
-  assert.equal(isNewBatchSequence(0xffff_ff00, 1), true);
-  assert.equal(isNewBatchSequence(1, 0xffff_ffff), false);
-  assert.equal(isNewBatchSequence(1, 0), false);
-});
-
-test('uses honest presence labels and a canonical invitation URL', () => {
-  assert.equal(connectionLabel(null), 'live');
-  assert.equal(connectionLabel(1), 'live · just you here');
-  assert.equal(connectionLabel(2), 'live · 2 connections');
-  assert.equal(
-    canonicalShareUrl('https://pulsii.net/?utm_source=test#moment'),
-    'https://pulsii.net/',
-  );
-  assert.equal(canonicalShareUrl('not a url'), 'not a url');
-});
-
-test('accepts a single touch tap but rejects drags and multi-touch gestures', () => {
-  assert.equal(isTapGesture(10, 10, 16, 17, false), true);
-  assert.equal(isTapGesture(10, 10, 40, 10, false), false);
-  assert.equal(isTapGesture(10, 10, 10, 10, true), false);
-  assert.equal(isTapGesture(10, 10, Number.NaN, 10, false), false);
+test('hidden tabs clear stale pulses and malformed binary does not draw', () => {
+  const b=browser(); b.sockets[0].open();
+  b.run("spawnPulse(0.5,0.5,'#ffffff')");
+  b.document.hidden=true; b.document.listeners.visibilitychange();
+  assert.equal(b.run('pulses.length'),0);
+  b.sockets[0].listeners.message({data:new ArrayBuffer(2)});
+  assert.equal(b.run('pulses.length'),0);
 });
