@@ -589,6 +589,11 @@
         gl.viewport(0, 0, targetCanvas.width, targetCanvas.height);
         this.clear();
       },
+      readPixels() {
+        const pixels = new Uint8Array(targetCanvas.width * targetCanvas.height * 4);
+        gl.readPixels(0, 0, targetCanvas.width, targetCanvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        return pixels;
+      },
       render(activePulses, now, profile, revision, viewport) {
         upload(activePulses, revision);
         gl.clearColor(0, 0, 0, 1);
@@ -626,6 +631,8 @@
   function createCanvasPulseRenderer(targetCanvas) {
     const context = targetCanvas.getContext('2d', { alpha: false, colorSpace: 'srgb', willReadFrequently: true });
     if (!context) return null;
+    let logicalWidth = targetCanvas.width;
+    let logicalHeight = targetCanvas.height;
 
     return {
       kind: 'canvas2d',
@@ -633,11 +640,16 @@
         context.globalAlpha = 1;
         context.globalCompositeOperation = 'source-over';
         context.fillStyle = '#000';
-        context.fillRect(0, 0, cssWidth, cssHeight);
+        context.fillRect(0, 0, logicalWidth, logicalHeight);
       },
       resize(width, height, ratio) {
+        logicalWidth = width;
+        logicalHeight = height;
         context.setTransform(ratio, 0, 0, ratio, 0, 0);
         this.clear();
+      },
+      readPixels() {
+        return context.getImageData(0, 0, targetCanvas.width, targetCanvas.height).data;
       },
       render(activePulses, now, profile, revision, viewport) {
         this.clear();
@@ -1613,6 +1625,75 @@
     });
 
     connect();
+
+    if (reviewDiagnostics && reviewParameters.get('visualtest') === '1') {
+      // Deterministic fixtures stay on detached canvases. They never join the
+      // shared canvas or manufacture activity/presence for another visitor.
+      const output = document.createElement('pre');
+      output.id = 'visual-review-results';
+      output.style.cssText = 'position:fixed;inset:16px;z-index:20;overflow:auto;background:#000;color:#ddd;padding:16px;white-space:pre-wrap';
+      output.textContent = 'Running offscreen rendering checks. No test pulses are shared.';
+      document.body.append(output);
+      root.setTimeout(() => {
+        const results = [];
+        const linear = Array.from({ length: 256 }, (_, value) => {
+          const channel = value / 255;
+          return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+        });
+        for (const kind of ['canvas2d', 'webgl2']) {
+          const target = document.createElement('canvas');
+          target.width = 768;
+          target.height = 512;
+          let testRenderer;
+          try {
+            testRenderer = kind === 'canvas2d' ? createCanvasPulseRenderer(target) : createWebGlPulseRenderer(target);
+            if (!testRenderer) { results.push({ renderer: kind, available: false }); continue; }
+            const result = { renderer: kind, available: true, frames: 0, maxChannel: 0, maxLuminance: 0, saturatedRedPixels: 0, litFrames: 0, maxRenderMs: 0, clearPassed: false };
+            let revision = 0;
+            for (const viewport of [{ width: 768, height: 512 }, { width: 512, height: 768 }]) {
+              target.width = viewport.width;
+              target.height = viewport.height;
+              testRenderer.resize(viewport.width, viewport.height, 1);
+              for (const arrangement of ['overlap', 'tiled', 'staggered']) {
+                // 88 exceeds burst 40 + 20/s over the 2.35s pulse lifetime.
+                const fixture = Array.from({ length: 88 }, (_, index) => ({
+                  xNorm: arrangement === 'overlap' ? 0.5 : ((index % 11) + 0.5) / 11,
+                  yNorm: arrangement === 'overlap' ? 0.5 : (Math.floor(index / 11) + 0.5) / 8,
+                  rgb: displayPulseRgb(index % 2 ? { r: 255, g: 0, b: 0 } : { r: 255, g: 255, b: 255 }),
+                  createdAt: arrangement === 'staggered' ? -index * 20 : 0,
+                }));
+                for (const profile of [{ calm: false, static: false, intensity: 1 }, { calm: true, static: false, intensity: 1 }, { calm: true, static: true, intensity: 1 }]) {
+                  for (const now of [30, 120, 180, 350, 600]) {
+                    const active = fixture.filter((pulse) => pulseAgeSeconds(pulse.createdAt, now) < PULSE_LIFETIME_SECONDS);
+                    const started = root.performance.now();
+                    testRenderer.render(active, now, profile, ++revision, viewport);
+                    result.maxRenderMs = Math.max(result.maxRenderMs, root.performance.now() - started);
+                    const pixels = testRenderer.readPixels();
+                    let lit = false;
+                    for (let i = 0; i < pixels.length; i += 4) {
+                      const r = linear[pixels[i]], g = linear[pixels[i + 1]], b = linear[pixels[i + 2]];
+                      result.maxChannel = Math.max(result.maxChannel, pixels[i], pixels[i + 1], pixels[i + 2]);
+                      result.maxLuminance = Math.max(result.maxLuminance, 0.2126 * r + 0.7152 * g + 0.0722 * b);
+                      if (r + g + b > 0 && r / (r + g + b) >= 0.8) result.saturatedRedPixels += 1;
+                      if (r + g + b > 0) lit = true;
+                    }
+                    result.frames += 1;
+                    if (lit) result.litFrames += 1;
+                  }
+                }
+              }
+            }
+            testRenderer.clear();
+            result.clearPassed = testRenderer.readPixels().every((value, index) => index % 4 === 3 || value === 0);
+            result.passed = result.maxLuminance < 0.1 && result.saturatedRedPixels === 0 && result.litFrames === result.frames && result.clearPassed;
+            results.push(result);
+          } catch (error) {
+            results.push({ renderer: kind, available: Boolean(testRenderer), passed: false, error: String(error.message) });
+          }
+        }
+        output.textContent = 'Offscreen renderer checks — synthetic fixtures, not participants.\n' + JSON.stringify(results, null, 2);
+      }, 0);
+    }
   }
 
   initialize();
