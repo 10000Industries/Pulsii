@@ -25,5 +25,8 @@
   "author": "",
   "private": true,
   "license": "UNLICENSED",
-  "type": "commonjs"
+  "type": "commonjs",
+  "devDependencies": {
+    "https-proxy-agent": "7.0.6"
+  }
 }

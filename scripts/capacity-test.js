@@ -62,11 +62,14 @@ async function main() {
     } else target = validateTargetUrl(process.argv[2]);
     const wsUrl = new URL('/live', target);
     wsUrl.protocol = target.protocol === 'https:' ? 'wss:' : 'ws:';
+    const localTarget = ['127.0.0.1', 'localhost', '[::1]'].includes(target.hostname);
+    const proxy = !localTarget && (process.env.HTTPS_PROXY || process.env.https_proxy);
+    const agent = proxy ? new (require('https-proxy-agent').HttpsProxyAgent)(proxy) : undefined;
 
     async function connect(index) {
       const c = { sent: 0, received: 0, seen: new Uint8Array(expectedSent) };
       const socket = new WebSocket(wsUrl, 'pulsii-immediate-v1', {
-        origin: target.origin, handshakeTimeout: 15_000,
+        origin: target.origin, handshakeTimeout: 15_000, agent,
       });
       c.socket = socket;
       sockets.push(c);
@@ -106,12 +109,14 @@ async function main() {
     }
 
     // 40 arrivals/second, beneath the proposed 50/s admission allowance.
-    for (let i = 0; i < clientsCount; i += 20) {
+    const handshakes = [];
+    for (let i = 0; i < clientsCount; i++) {
       check();
-      await Promise.all(Array.from({ length: Math.min(20, clientsCount - i) }, (_, j) => connect(i + j)));
-      if ((i + 20) % 200 === 0) console.error(`Connected ${Math.min(i + 20, clientsCount)}`);
-      if (i + 20 < clientsCount) await delay(500);
+      handshakes.push(connect(i).catch(fail));
+      if ((i + 1) % 200 === 0) console.error(`Started ${i + 1} connections`);
+      if (i + 1 < clientsCount) await delay(25);
     }
+    await Promise.all(handshakes);
     check();
     assert.equal(sockets.filter(c => c.socket.readyState === WebSocket.OPEN).length, clientsCount);
     const connectedMs = performance.now() - started;
