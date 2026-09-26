@@ -16,7 +16,7 @@ services:
       - key: PUBLIC_MODE
         value: "true"
       - key: PUBLIC_ORIGIN
-        value: "https://pulsii.net"
+        value: "https://www.pulsii.net"
       - key: MAX_CONNECTIONS
         value: "20"
       - key: CLIENT_RATE_BURST

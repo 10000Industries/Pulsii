@@ -14,7 +14,7 @@ Open `http://localhost:3000`. The WebSocket endpoint is `/live`.
 The owner accepted the restored interaction after a simultaneous phone/iPad
 check on 26 September 2026 and authorised permanent Starter hosting.
 `render.production.yaml` records the configuration for the existing production
-service at https://pulsii.net: one Starter instance, manual deploys, health
+service at https://www.pulsii.net: one Starter instance, manual deploys, health
 `/healthz`, public metadata, and an initial 20-connection limit. Trial expiry
 is disabled there. The $7/month compute price excludes any applicable tax and
 usage overages; this is not a hard billing cap.
