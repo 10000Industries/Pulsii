@@ -1,5 +1,5 @@
 // Minimal, heavily commented Pulse client.
-// Renders expanding circles with additive blending and syncs pulses via WebSocket.
+// Original released radial-glow renderer; bounded live transport is adapted below.
 
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
@@ -36,8 +36,113 @@ let botTimer = null;
 
 // WebSocket endpoint for multi-user sync (uses current host/port for deploy friendliness).
 const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss' : 'ws';
-const WS_URL = `${WS_PROTOCOL}://${window.location.host}`;
+const WS_URL = `${WS_PROTOCOL}://${window.location.host}/live`;
 let socket;
+let reconnectTimer = null;
+let reconnectAttempt = 0;
+let trialEnded = false;
+const CLIENT_BUILD = 'touch-20260926-1';
+const USE_NATIVE_TOUCH = 'ontouchstart' in window;
+const MAX_ACTIVE_PULSES = 1024;
+let inputCount = 0;
+let localCount = 0;
+let paintedCount = 0;
+let diagnosticsLastPaint = 0;
+let busyUntil = 0;
+let statusTimer = null;
+let sentCount = 0;
+let receivedCount = 0;
+const diagnostics = /pulsii-restoration-review/.test(window.location.hostname) &&
+  new URLSearchParams(window.location.search).get('diagnostics') === '1';
+
+function showConnectionStatus(text) {
+  const status = document.getElementById('connection-status');
+  status.textContent = text;
+  status.hidden = !text;
+}
+
+function temporaryStatus(text) {
+  clearTimeout(statusTimer);
+  showConnectionStatus(text);
+  statusTimer = setTimeout(() => {
+    if (socket?.readyState === WebSocket.OPEN) showConnectionStatus('');
+  }, 1800);
+}
+
+function reportDiagnostics() {
+  if (!diagnostics) return;
+  canvas.dataset.build = CLIENT_BUILD;
+  canvas.dataset.inputMode = USE_NATIVE_TOUCH ? 'touchstart' : 'pointerdown';
+  canvas.dataset.inputs = String(inputCount);
+  canvas.dataset.local = String(localCount);
+  canvas.dataset.painted = String(paintedCount);
+  canvas.dataset.sent = String(sentCount);
+  canvas.dataset.received = String(receivedCount);
+  canvas.dataset.activePulses = String(pulses.length);
+  const readout = document.getElementById('input-diagnostics');
+  if (readout) {
+    readout.hidden = false;
+    readout.textContent = `${CLIENT_BUILD} · ${USE_NATIVE_TOUCH ? 'touch' : 'pointer'} · input ${inputCount} · local ${localCount} · painted ${paintedCount} · sent ${sentCount} · received ${receivedCount}`;
+  }
+}
+
+const BATCH_HEADER_BYTES = 19;
+const BATCH_PROTOCOL_VERSION = 1;
+const PULSE_RECORD_BYTES = 7;
+  function decodePulseBatch(data) {
+    let view;
+    if (data instanceof ArrayBuffer) {
+      view = new DataView(data);
+    } else if (ArrayBuffer.isView(data)) {
+      view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    } else {
+      return null;
+    }
+    if (view.byteLength < BATCH_HEADER_BYTES) return null;
+    if (view.getUint8(0) !== BATCH_PROTOCOL_VERSION) return null;
+
+    const count = view.getUint16(17, false);
+    const sequence = view.getUint32(5, false);
+    if (
+      count === 0 ||
+      sequence === 0 ||
+      view.byteLength !==
+      BATCH_HEADER_BYTES + (count * PULSE_RECORD_BYTES)
+    ) {
+      return null;
+    }
+
+    const pulses = new Array(count);
+    for (let index = 0; index < count; index += 1) {
+      const offset = BATCH_HEADER_BYTES + (index * PULSE_RECORD_BYTES);
+      const red = view.getUint8(offset + 4);
+      const green = view.getUint8(offset + 5);
+      const blue = view.getUint8(offset + 6);
+      pulses[index] = {
+        type: 'pulse',
+        xNorm: view.getUint16(offset, false) / 65_535,
+        yNorm: view.getUint16(offset + 2, false) / 65_535,
+        color: `#${red.toString(16).padStart(2, '0')}${green
+          .toString(16)
+          .padStart(2, '0')}${blue.toString(16).padStart(2, '0')}`,
+      };
+    }
+
+    const serverTimeMs =
+      (view.getUint32(9, false) * 4_294_967_296) +
+      view.getUint32(13, false);
+    if (!Number.isSafeInteger(serverTimeMs)) return null;
+
+    return {
+      count,
+      processEpoch: view.getUint32(1, false),
+      pulses,
+      sequence,
+      serverTimeMs,
+    };
+  }
+
+
 
 // Track CSS size and device pixel ratio so pointer math and drawing stay aligned.
 let cssWidth = 0;
@@ -47,9 +152,13 @@ let deviceRatio = window.devicePixelRatio || 1;
 // Scale canvas to device pixels so circles stay sharp on HiDPI displays, while drawing in CSS units.
 function resizeCanvas() {
   const viewport = window.visualViewport;
-  cssWidth = viewport ? viewport.width : window.innerWidth;
-  cssHeight = viewport ? viewport.height : window.innerHeight;
-  deviceRatio = window.devicePixelRatio || 1;
+  const nextWidth = viewport ? viewport.width : window.innerWidth;
+  const nextHeight = viewport ? viewport.height : window.innerHeight;
+  const nextRatio = window.devicePixelRatio || 1;
+  if (cssWidth === nextWidth && cssHeight === nextHeight && deviceRatio === nextRatio) return;
+  cssWidth = nextWidth;
+  cssHeight = nextHeight;
+  deviceRatio = nextRatio;
 
   canvas.width = Math.round(cssWidth * deviceRatio);
   canvas.height = Math.round(cssHeight * deviceRatio);
@@ -115,6 +224,7 @@ function randomColor() {
 // Create a new pulse at normalized coordinates (0-1) so it maps across screen sizes.
 function spawnPulse(normX, normY, colorHex) {
   const rgb = hexToRgb(colorHex);
+  if (pulses.length >= MAX_ACTIVE_PULSES) pulses.shift();
   pulses.push({
     normX,
     normY,
@@ -124,12 +234,31 @@ function spawnPulse(normX, normY, colorHex) {
   });
 }
 
-// Send a pulse to peers and create it locally immediately (no round-trip delay).
+// Preserve immediate local drawing. The negotiated protocol sends only peers'
+// contributions back, so the original server-echo duplication cannot occur.
 function sendPulse(normX, normY, colorHex) {
+  if (trialEnded) {
+    showConnectionStatus('review ended');
+    return;
+  }
+  // The local interaction never waits on a timer, token bucket or network.
   spawnPulse(normX, normY, colorHex);
-
-  if (socket && socket.readyState === WebSocket.OPEN) {
+  localCount += 1;
+  reportDiagnostics();
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    showConnectionStatus('local only — reconnecting');
+    return;
+  }
+  if (performance.now() < busyUntil || socket.bufferedAmount > 64 * 1024) {
+    temporaryStatus('local only — sharing busy');
+    return;
+  }
+  try {
     socket.send(JSON.stringify({ type: 'pulse', xNorm: normX, yNorm: normY, color: colorHex }));
+    sentCount += 1;
+    reportDiagnostics();
+  } catch {
+    showConnectionStatus('local only — reconnecting');
   }
 }
 
@@ -192,20 +321,28 @@ function openColorPicker() {
 }
 
 function handleCanvasPointerDown(event) {
-  if (colorPicker.isDraggingPicker || event.target !== canvas) return;
+  if (event.target !== canvas) return;
+  // On touch browsers, native touchstart owns finger/Pencil input. Pointer
+  // events remain for mouse/trackpad; this prevents duplicate compatibility input.
+  if (USE_NATIVE_TOUCH && (event.pointerType === 'touch' || event.pointerType === 'pen')) return;
+  if (event.button !== undefined && event.button !== 0) return;
+  if (event.cancelable) event.preventDefault();
   const { normX, normY } = getPointerPosition(event);
-  const colorHex = colorPicker.input.value;
-  sendPulse(normX, normY, colorHex);
+  inputCount += 1;
+  sendPulse(normX, normY, colorPicker.input.value);
 }
 
 function handleCanvasTouchStart(event) {
-  if (colorPicker.isDraggingPicker) return;
-  if (event.touches.length === 0) return;
   if (event.target !== canvas) return;
-  const touch = event.touches[0];
-  const { normX, normY } = getTouchPosition(touch);
-  const colorHex = colorPicker.input.value;
-  sendPulse(normX, normY, colorHex);
+  // Handle raw contacts before browser tap/double-tap gesture interpretation.
+  // changedTouches identifies NEW fingers, rather than repeating touches[0].
+  if (event.cancelable) event.preventDefault();
+  for (const touch of event.changedTouches) {
+    if (touch.target && touch.target !== canvas) continue;
+    const { normX, normY } = getTouchPosition(touch);
+    inputCount += 1;
+    sendPulse(normX, normY, colorPicker.input.value);
+  }
 }
 
 // Colour picker drag handlers (separate from canvas pulses).
@@ -319,47 +456,59 @@ function handlePickerTouchCancel(event) {
   event.preventDefault();
 }
 
-// Attempt to open and maintain a WebSocket connection to sync pulses across users.
+// Reconnect with bounded backoff, and stop after the review expires.
 function connectWebSocket() {
-  socket = new WebSocket(WS_URL);
+  if (trialEnded || (socket && socket.readyState <= WebSocket.OPEN)) return;
+  const nextSocket = new WebSocket(WS_URL, 'pulsii-immediate-v1');
+  socket = nextSocket;
+  nextSocket.binaryType = 'arraybuffer';
+  showConnectionStatus('connecting');
+  const connectionTimeout = setTimeout(() => nextSocket.close(), 12000);
+  let stableTimer;
 
-  socket.addEventListener('open', () => {
-    console.log('WebSocket connected');
+  nextSocket.addEventListener('open', () => {
+    clearTimeout(connectionTimeout);
+    showConnectionStatus('');
+    stableTimer = setTimeout(() => { reconnectAttempt = 0; }, 30000);
   });
-
-  socket.addEventListener('message', (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      const { type, xNorm, yNorm, color } = data || {};
-
-      if (type === 'pulse' && typeof xNorm === 'number' && typeof yNorm === 'number' && typeof color === 'string') {
-        // Convert normalized coords back into canvas space before drawing.
-        const clampedX = Math.max(0, Math.min(1, xNorm));
-        const clampedY = Math.max(0, Math.min(1, yNorm));
-        const pxX = clampedX * canvas.width;
-        const pxY = clampedY * canvas.height;
-        const normX = pxX / canvas.width; // stays normalized for spawnPulse
-        const normY = pxY / canvas.height;
-        spawnPulse(normX, normY, color);
+  nextSocket.addEventListener('message', (event) => {
+    if (socket !== nextSocket) return;
+    if (typeof event.data !== 'string') {
+      const batch = decodePulseBatch(event.data);
+      if (!batch || document.hidden) return;
+      for (const pulse of batch.pulses) {
+        spawnPulse(pulse.xNorm, pulse.yNorm, pulse.color);
+        receivedCount += 1;
       }
-    } catch (err) {
-      // Ignore malformed messages to keep the loop resilient.
-      console.error('Ignoring bad message', err);
+      reportDiagnostics();
+      return;
     }
+    try {
+      const message = JSON.parse(event.data);
+      if (message.type === 'busy') {
+        busyUntil = performance.now() + Math.min(15000, Math.max(100, message.retryAfterMs || 1000));
+        temporaryStatus('canvas busy — that pulse was not shared');
+      }
+    } catch { /* Ignore unknown or malformed control frames. */ }
   });
-
-  socket.addEventListener('close', () => {
-    console.log('WebSocket disconnected, retrying...');
-    // Lightweight reconnect loop; keeps trying without overwhelming the server.
-    setTimeout(connectWebSocket, 500);
+  nextSocket.addEventListener('close', (event) => {
+    clearTimeout(connectionTimeout);
+    clearTimeout(stableTimer);
+    if (socket !== nextSocket) return;
+    if (event.code === 4000) {
+      trialEnded = true;
+      showConnectionStatus('review ended');
+      return;
+    }
+    const wait = event.code === 1013 ? 15000 : event.code === 1008 ? 10000 :
+      Math.min(8000, 500 * 2 ** Math.min(reconnectAttempt++, 5)) * (0.75 + Math.random() * 0.25);
+    showConnectionStatus(event.code === 1013 ? 'canvas full — retrying' : 'reconnecting — not sharing');
+    reconnectTimer = setTimeout(connectWebSocket, wait);
   });
-
-  socket.addEventListener('error', () => {
-    // Errors are followed by close; allow the reconnect logic to run.
-  });
+  nextSocket.addEventListener('error', () => {});
 }
 
-// Main render loop: update physics, clear, then draw all pulses with additive blend.
+// Original released render loop: expanding radial gradients and trailing fade.
 let lastTime = performance.now();
 function animate(now) {
   const deltaSec = Math.min((now - lastTime) / 1000, 0.05); // cap delta to avoid jumps
@@ -404,8 +553,16 @@ function animate(now) {
     ctx.arc(x, y, pulse.radius, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
+    if (diagnostics && !pulse.painted) {
+      pulse.painted = true;
+      paintedCount += 1;
+    }
   }
 
+  if (diagnostics && now - diagnosticsLastPaint >= 250) {
+    diagnosticsLastPaint = now;
+    reportDiagnostics();
+  }
   requestAnimationFrame(animate);
 }
 
@@ -417,20 +574,47 @@ function init() {
 
   resizeCanvas();
   window.addEventListener('resize', resizeCanvas);
-  canvas.addEventListener('pointerdown', handleCanvasPointerDown);
-  canvas.addEventListener('touchstart', handleCanvasTouchStart, { passive: false });
-  colorPicker.handle.addEventListener('pointerdown', handlePickerPointerDown);
-  colorPicker.handle.addEventListener('pointermove', handlePickerPointerMove);
-  colorPicker.handle.addEventListener('pointerup', handlePickerPointerUp);
-  colorPicker.handle.addEventListener('pointercancel', handlePickerPointerCancel);
-  colorPicker.handle.addEventListener('touchstart', handlePickerTouchStart, { passive: false });
-  colorPicker.handle.addEventListener('touchmove', handlePickerTouchMove, { passive: false });
-  colorPicker.handle.addEventListener('touchend', handlePickerTouchEnd, { passive: false });
-  colorPicker.handle.addEventListener('touchcancel', handlePickerTouchCancel, { passive: false });
+  if (window.PointerEvent) {
+    canvas.addEventListener('pointerdown', handleCanvasPointerDown);
+    colorPicker.handle.addEventListener('pointerdown', handlePickerPointerDown);
+    colorPicker.handle.addEventListener('pointermove', handlePickerPointerMove);
+    colorPicker.handle.addEventListener('pointerup', handlePickerPointerUp);
+    colorPicker.handle.addEventListener('pointercancel', handlePickerPointerCancel);
+  } else {
+    colorPicker.handle.addEventListener('touchstart', handlePickerTouchStart, { passive: false });
+    colorPicker.handle.addEventListener('touchmove', handlePickerTouchMove, { passive: false });
+    colorPicker.handle.addEventListener('touchend', handlePickerTouchEnd, { passive: false });
+    colorPicker.handle.addEventListener('touchcancel', handlePickerTouchCancel, { passive: false });
+  }
+  if (USE_NATIVE_TOUCH || !window.PointerEvent) {
+    canvas.addEventListener('touchstart', handleCanvasTouchStart, { passive: false });
+    canvas.addEventListener('touchmove', (event) => { if (event.cancelable) event.preventDefault(); }, { passive: false });
+  }
+  if (!window.PointerEvent) canvas.addEventListener('mousedown', handleCanvasPointerDown);
+  colorPicker.handle.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openColorPicker(); }
+  });
   if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', resizeCanvas);
   }
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      pulses.length = 0;
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, cssWidth, cssHeight);
+      reportDiagnostics();
+    }
+    lastTime = performance.now();
+  });
+  window.addEventListener('pagehide', () => {
+    clearTimeout(reconnectTimer);
+    const oldSocket = socket;
+    socket = null;
+    oldSocket?.close();
+  });
+  window.addEventListener('pageshow', connectWebSocket);
   connectWebSocket();
+  reportDiagnostics();
 
   // Toggle this flag above to true to enable the local test bot.
   if (BOT_ENABLED) {

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title description">
+  <title id="title">Pulsii — One shared moment</title>
+  <desc id="description">Coloured circular pulses overlap on a black field.</desc>
+  <defs>
+    <filter id="soft-glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="12"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="630" fill="#000000"/>
+  <g fill="none" stroke-width="7">
+    <circle cx="270" cy="380" r="245" stroke="#00d4ff" opacity=".18" filter="url(#soft-glow)"/>
+    <circle cx="270" cy="380" r="245" stroke="#00d4ff" opacity=".82"/>
+    <circle cx="485" cy="270" r="190" stroke="#ff4d8d" opacity=".18" filter="url(#soft-glow)"/>
+    <circle cx="485" cy="270" r="190" stroke="#ff4d8d" opacity=".78"/>
+    <circle cx="575" cy="470" r="135" stroke="#ffd166" opacity=".16" filter="url(#soft-glow)"/>
+    <circle cx="575" cy="470" r="135" stroke="#ffd166" opacity=".72"/>
+  </g>
+  <g font-family="DejaVu Sans, sans-serif" text-anchor="start">
+    <text x="720" y="273" fill="#f5f8fc" font-size="76" font-weight="500" letter-spacing="10">Pulsii</text>
+    <text x="724" y="329" fill="#ffffff" fill-opacity=".72" font-size="28" font-weight="400" letter-spacing="1">One shared moment.</text>
+    <text x="724" y="374" fill="#ffffff" fill-opacity=".52" font-size="20" font-weight="400">tap · share it live · watch it fade</text>
+  </g>
+</svg>

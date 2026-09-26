@@ -1,20 +1,27 @@
-# Pulse
+# Pulsii
 
-Minimal real-time canvas demo: click/tap to drop expanding colour pulses on a pure black stage. Pulses render additively and sync over WebSockets so anyone on the same server sees them. A small draggable circle opens the native colour picker; pulses use the selected colour.
+The frontend is recovered from released main `a1a48de` following the owner's
+rejection of the redesigned review on 26 September 2026. See
+[original recovery](docs/original-recovery.md) for the exact fidelity boundary.
 
-## Install and run locally
-- Requires Node.js.
-- In the project folder:
-  - `npm install`
-  - `npm start` (uses `PORT` if set, default 8080; auto-falls back to 3001 if 8080 is busy; binds to `0.0.0.0` for LAN access)
-- Open the app in a browser: `http://localhost:8080` (or `http://localhost:3001` if it fell back, or whichever `PORT` you set).
+A black shared canvas, a draggable colour picker, and broad expanding glows.
+Your tap draws immediately; the bounded relay sends it to connected peers.
+No accounts, messages, database, saved canvas or analytics identifiers.
 
-## Connect from another device on the same network
-- Find your computer’s LAN IP (e.g., on Windows: `ipconfig` → IPv4 Address).
-- On the other device, open: `http://<your-ip>:<port>` (example: `http://192.168.1.42:8080` or `:3001` if the fallback is in use).
-- Make sure both devices share the same Wi‑Fi/LAN and allow the Node.js server through any firewall prompt.
+Use Node 24.14.0, then `npm ci`, `npm test`, `npm run check`, and `npm start`.
+Open `http://localhost:3000`. The WebSocket endpoint is `/live`.
 
-## Notes
-- The client auto-uses the page’s host/port for WebSockets; loading the page from your LAN IP makes syncing work across devices.
-- A small colour circle sits near bottom-left; tap/click to change colour or drag to move it.
-- Optional local test bot: set `BOT_ENABLED` in `script.js` to control periodic centre pulses (local-only by default).
+The owner accepted the restored interaction after a simultaneous phone/iPad
+check on 26 September 2026 and authorised permanent Starter hosting.
+`render.production.yaml` records the configuration for the existing production
+service at https://pulsii.net: one Starter instance, manual deploys, health
+`/healthz`, public metadata, and an initial 20-connection limit. Trial expiry
+is disabled there. The $7/month compute price excludes any applicable tax and
+usage overages; this is not a hard billing cap.
+
+`render.yaml` remains the separate Free review configuration with
+[trial controls](docs/trial-controls.md). Historical visual/readiness reports
+about the rejected frontend are superseded. The original renderer is retained;
+its animation can slow on severely throttled clients because elapsed time is
+capped per frame. The owner's ordinary phone/iPad interaction passed; the cloud
+browser's recording is not a representative smoothness benchmark.
