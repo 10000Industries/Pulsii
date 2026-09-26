@@ -11,6 +11,7 @@ const {
   MAX_BATCH_PULSES,
   PULSE_RECORD_BYTES,
   encodePulseBatch,
+  excludePulseBatchIndexes,
   parsePulseMessage,
   serializeBusy,
   serializePresence,
@@ -688,26 +689,31 @@ function createPulsiiServer(options = {}) {
       serverTimeMs: Math.max(0, Math.trunc(now())),
     };
     const payload = encodePulseBatch({ ...batchHeader, pulses });
+    const indexesBySource = new Map();
+    pulses.forEach((pulse, index) => {
+      const source = pulseSources.get(pulse);
+      if (!indexesBySource.has(source)) indexesBySource.set(source, []);
+      indexesBySource.get(source).push(index);
+    });
     let deliveryAttempts = 0;
     for (const client of wss.clients) {
       if (
         client.readyState !== WebSocket.OPEN ||
         !client.pulsiiConnected
       ) continue;
-      const deliveredPulses = client.protocol === 'pulsii-immediate-v1'
-        ? pulses.filter((pulse) => pulseSources.get(pulse) !== client)
-        : pulses;
-      if (deliveredPulses.length === 0) continue;
-      const deliveredPayload = deliveredPulses.length === pulses.length ? payload :
-        encodePulseBatch({ ...batchHeader, pulses: deliveredPulses });
+      const excluded = client.protocol === 'pulsii-immediate-v1'
+        ? indexesBySource.get(client) : undefined;
+      const deliveredCount = pulses.length - (excluded?.length || 0);
+      if (deliveredCount === 0) continue;
+      const deliveredPayload = excluded ? excludePulseBatchIndexes(payload, excluded) : payload;
       if (!send(client, deliveredPayload, { binary: true }, () => {
         metrics.batchDeliveries += 1;
-        metrics.pulseDeliveries += deliveredPulses.length;
+        metrics.pulseDeliveries += deliveredCount;
         metrics.pulseWireBytes += deliveredPayload.length;
       })) continue;
       deliveryAttempts += 1;
       metrics.batchDeliveryAttempts += 1;
-      metrics.pulseDeliveryAttempts += deliveredPulses.length;
+      metrics.pulseDeliveryAttempts += deliveredCount;
       metrics.pulseWireBytesAttempted += deliveredPayload.length;
     }
 

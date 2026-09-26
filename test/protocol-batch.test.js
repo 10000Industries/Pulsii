@@ -8,6 +8,7 @@ const {
   PULSE_RECORD_BYTES,
   decodePulseBatch,
   encodePulseBatch,
+  excludePulseBatchIndexes,
   inspectPulseBatch,
   serializeBusy,
 } = require('../lib/protocol');
@@ -127,4 +128,25 @@ test('serializes an explicit positive retry notice', () => {
     '{"type":"busy","retryAfterMs":250}',
   );
   assert.throws(() => serializeBusy(0), /positive integer/);
+});
+
+test('sender exclusion preserves exact peer bytes and immutable batch headers', () => {
+  const pulses = Array.from({ length: 4 }, (_, i) => ({
+    type: 'pulse', xNorm: i / 4, yNorm: 1 - i / 4, color: '#a1b2c' + i,
+  }));
+  const header = { processEpoch: 19, sequence: 42, serverTimeMs: 1800000000123 };
+  const encoded = encodePulseBatch({ ...header, pulses });
+  const original = Buffer.from(encoded);
+  for (let mask = 0; mask < 16; mask++) {
+    const indexes = [0, 1, 2, 3].filter(i => mask & (1 << i));
+    const expected = pulses.filter((_, i) => !(mask & (1 << i)));
+    const actual = excludePulseBatchIndexes(encoded, indexes);
+    assert.deepEqual(actual, expected.length ? encodePulseBatch({ ...header, pulses: expected }) : null);
+    assert.deepEqual(encoded, original);
+  }
+  assert.equal(excludePulseBatchIndexes(encoded, []), encoded);
+  for (const indexes of [[-1], [4], [1, 1], [2, 1], [0.5]]) {
+    assert.throws(() => excludePulseBatchIndexes(encoded, indexes), /ordered, unique/);
+  }
+  assert.throws(() => excludePulseBatchIndexes(Buffer.alloc(1), []), /Invalid batch/);
 });
