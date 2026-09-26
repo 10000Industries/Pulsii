@@ -23,6 +23,7 @@ const EXPECTED_ASSET_ROUTES = [
   '/index.html',
   '/style.css',
   '/script.js',
+  '/review-recorder.js',
   '/favicon.ico',
   '/favicon.png',
   '/manifest.webmanifest',

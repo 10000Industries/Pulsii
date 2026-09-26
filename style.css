@@ -122,6 +122,28 @@ html, body {
 #coffee-card a { color: inherit; font-size: 12px; }
 #color-handle:focus-visible { outline: 2px solid white; outline-offset: 3px; }
 
+/* Temporary recording controls, only inserted by the review-only recorder. */
+#review-recorder {
+  position: fixed;
+  left: 12px;
+  bottom: 34px;
+  max-width: calc(100vw - 24px);
+  z-index: 20;
+  padding: 10px;
+  border: 1px solid #444;
+  border-radius: 6px;
+  background: #181818;
+  color: #ddd;
+  font: 12px sans-serif;
+}
+#review-recorder output { display: block; margin-bottom: 8px; }
+#review-recorder button, #review-recorder a {
+  margin-right: 8px;
+  padding: 6px;
+  font: inherit;
+}
+#review-recorder a { color: #9ccaff; }
+
 /* Visible only when the owner explicitly opens ?diagnostics=1. */
 #input-diagnostics {
   position: fixed;

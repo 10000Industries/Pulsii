@@ -45,6 +45,7 @@ const PUBLIC_ASSETS = Object.freeze({
   '/index.html': 'index.html',
   '/style.css': 'style.css',
   '/script.js': 'script.js',
+  '/review-recorder.js': 'review-recorder.js',
   '/favicon.ico': 'favicon.ico',
   '/favicon.png': 'favicon.png',
   '/manifest.webmanifest': 'manifest.webmanifest',
