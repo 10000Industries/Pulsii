@@ -7,11 +7,12 @@
     "start": "node server.js",
     "serve": "node server.js",
     "test": "node --test test/*.test.js",
-    "check": "node --check server.js && node --check lib/protocol.js && node --check script.js && node --check scripts/load-test.js && node --check scripts/review-probe.js && node --check scripts/deployed-load-test.js && node --check test/server.test.js && node --check test/client-core.test.js && node --check test/protocol-batch.test.js && node --check test/review-probe.test.js && node --check test/deployed-load-test.test.js",
+    "check": "node --check server.js && node --check lib/protocol.js && node --check script.js && node --check scripts/load-test.js && node --check scripts/review-probe.js && node --check scripts/deployed-load-test.js && node --check test/server.test.js && node --check test/client-core.test.js && node --check test/protocol-batch.test.js && node --check test/review-probe.test.js && node --check test/deployed-load-test.test.js && node --check scripts/capacity-test.js",
     "load-test": "node scripts/load-test.js",
     "load-test:fanout": "node scripts/load-test.js fanout",
     "review-probe": "node scripts/review-probe.js",
-    "deployed-load-test": "node scripts/deployed-load-test.js"
+    "deployed-load-test": "node scripts/deployed-load-test.js",
+    "capacity-test": "node scripts/capacity-test.js"
   },
   "engines": {
     "node": "24.14.0"

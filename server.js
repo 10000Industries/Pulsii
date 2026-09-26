@@ -225,6 +225,8 @@ function runtimeOptionsFromEnv(environment = process.env) {
     globalRatePerSecond: parsePositiveNumber(environment.GLOBAL_RATE_PER_SECOND, 'GLOBAL_RATE_PER_SECOND', DEFAULT_GLOBAL_RATE_PER_SECOND),
     upgradeRateBurst: parsePositiveInteger(environment.UPGRADE_RATE_BURST, 'UPGRADE_RATE_BURST', DEFAULT_UPGRADE_RATE_BURST),
     upgradeRatePerSecond: parsePositiveNumber(environment.UPGRADE_RATE_PER_SECOND, 'UPGRADE_RATE_PER_SECOND', DEFAULT_UPGRADE_RATE_PER_SECOND),
+    httpRateBurst: parsePositiveInteger(environment.HTTP_RATE_BURST, 'HTTP_RATE_BURST', DEFAULT_HTTP_RATE_BURST),
+    httpRatePerSecond: parsePositiveNumber(environment.HTTP_RATE_PER_SECOND, 'HTTP_RATE_PER_SECOND', DEFAULT_HTTP_RATE_PER_SECOND),
     clientRateBurst: parsePositiveInteger(
       environment.CLIENT_RATE_BURST,
       'CLIENT_RATE_BURST',

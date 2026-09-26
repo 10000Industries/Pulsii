@@ -18,27 +18,31 @@ services:
       - key: PUBLIC_ORIGIN
         value: "https://www.pulsii.net"
       - key: MAX_CONNECTIONS
-        value: "20"
+        value: "1000"
       - key: CLIENT_RATE_BURST
         value: "256"
       - key: CLIENT_RATE_PER_SECOND
         value: "120"
       - key: GLOBAL_RATE_BURST
-        value: "800"
+        value: "1500"
       - key: GLOBAL_RATE_PER_SECOND
         value: "500"
       - key: UPGRADE_RATE_BURST
-        value: "40"
+        value: "200"
       - key: UPGRADE_RATE_PER_SECOND
-        value: "2"
+        value: "50"
+      - key: HTTP_RATE_BURST
+        value: "3000"
+      - key: HTTP_RATE_PER_SECOND
+        value: "500"
       - key: BATCH_INTERVAL_MS
         value: "50"
       - key: MAX_GLOBAL_CANDIDATES
-        value: "640"
+        value: "2048"
       - key: MAX_CLIENT_CANDIDATES
         value: "128"
       - key: MAX_BATCH_PULSES
-        value: "640"
+        value: "1024"
       - key: BUSY_RETRY_MS
         value: "100"
       - key: TRIAL_MODE
