@@ -6,6 +6,8 @@ const fs = require('node:fs');
 const { randomBytes } = require('node:crypto');
 const express = require('express');
 const { WebSocket, WebSocketServer } = require('ws');
+const { createAnalytics } = require('./lib/analytics');
+const { installAdmin, parsePasswordHash } = require('./lib/admin');
 const {
   BATCH_HEADER_BYTES,
   MAX_BATCH_PULSES,
@@ -209,6 +211,12 @@ function runtimeOptionsFromEnv(environment = process.env) {
   return {
     publicMode,
     publicOrigin,
+    ...(environment.ANALYTICS_DB_PATH ? {
+      analyticsConfig: {
+        filename: environment.ANALYTICS_DB_PATH,
+        passwordHash: environment.ADMIN_PASSWORD_HASH,
+      },
+    } : {}),
     ...(parseBooleanFlag(environment.TRIAL_MODE, false) ? {
       trial: {
         endsAt: Date.parse(environment.TRIAL_ENDS_AT || ''),
@@ -303,6 +311,7 @@ function createPulsiiServer(options = {}) {
     deployedCommit = 'unknown',
     processEpoch = randomBytes(4).readUInt32BE(0),
     logger = null,
+    analyticsConfig = null,
     now = Date.now,
     trial = null,
     globalRateBurst = DEFAULT_GLOBAL_RATE_BURST,
@@ -319,6 +328,18 @@ function createPulsiiServer(options = {}) {
   const normalizedPublicOrigin = parsePublicOrigin(publicOrigin);
   if (Boolean(publicMode) !== Boolean(normalizedPublicOrigin)) {
     throw new Error('PUBLIC_MODE and PUBLIC_ORIGIN must be configured together');
+  }
+  if (analyticsConfig) {
+    if (!path.isAbsolute(analyticsConfig.filename || '')) {
+      throw new Error('ANALYTICS_DB_PATH must be an absolute path on persistent storage');
+    }
+    parsePasswordHash(analyticsConfig.passwordHash);
+    if (publicMode && !normalizedPublicOrigin.startsWith('https://')) {
+      throw new Error('Private analytics requires HTTPS in public mode');
+    }
+    if (!normalizedPublicOrigin && !/^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(analyticsConfig.localOrigin || '')) {
+      throw new Error('Local analytics requires an explicit loopback origin');
+    }
   }
   for (const [name, value, maximum] of [
     ['maxConnections', maxConnections, Number.MAX_SAFE_INTEGER],
@@ -424,6 +445,10 @@ function createPulsiiServer(options = {}) {
   });
 
   let presenceCount = 0;
+  const analytics = analyticsConfig ? createAnalytics({
+    filename: analyticsConfig.filename, now, logger,
+    intervalMs: analyticsConfig.intervalMs,
+  }) : null;
   const startedAt = now();
   const metrics = {
     pageLoads: 0,
@@ -503,11 +528,18 @@ function createPulsiiServer(options = {}) {
     response.json({ status: 'ok', connections: presenceCount });
   });
 
+  if (analytics) installAdmin(app, {
+    analytics,
+    passwordHash: analyticsConfig.passwordHash,
+    origin: normalizedPublicOrigin || analyticsConfig.localOrigin,
+    publicDir, now,
+  });
+
   app.get('/robots.txt', (request, response) => {
     response.setHeader('Cache-Control', 'no-store');
     response.type('text/plain').send(
       publicMode
-        ? 'User-agent: *\nAllow: /\n'
+        ? `User-agent: *\nAllow: /\n${analytics ? 'Disallow: /admin\n' : ''}`
         : 'User-agent: *\nDisallow: /\n',
     );
   });
@@ -516,6 +548,13 @@ function createPulsiiServer(options = {}) {
     app.get(route, (request, response, next) => {
       if (route === '/' || route === '/index.html') {
         metrics.pageLoads += 1;
+        // HEAD probes are not page views. Do not persist arbitrary source URLs.
+        if (request.method === 'GET') {
+          analytics?.add('pageLoads');
+          if (new URL(request.originalUrl, 'http://localhost').searchParams.get('source') === 'reddit-sideproject') {
+            analytics?.add('redditPageLoads');
+          }
+        }
         response.setHeader(
           'Cache-Control',
           'public, max-age=0, must-revalidate',
@@ -770,12 +809,15 @@ function createPulsiiServer(options = {}) {
     }
     if (presenceCount >= maxConnections) {
       metrics.capacityRejected += 1;
+      analytics?.add('capacity');
       socket.pulsiiConnected = false;
       socket.close(1013, 'Server at capacity');
       return;
     }
 
     presenceCount += 1;
+    analytics?.presence(presenceCount);
+    analytics?.add('connections');
     metrics.connectionsAccepted += 1;
     metrics.peakConnections = Math.max(
       metrics.peakConnections,
@@ -854,6 +896,7 @@ function createPulsiiServer(options = {}) {
         !takeGlobalPulseToken()
       ) {
         metrics.pulsesRejectedBusy += 1;
+        analytics?.add('busy');
         const queuedBatches = Math.max(
           1,
           Math.ceil(candidateQueueDepth / maxBatchPulses),
@@ -869,6 +912,7 @@ function createPulsiiServer(options = {}) {
       }
 
       metrics.pulsesAccepted += 1;
+      analytics?.add('pulses');
       if (trial) trialBytesReserved += trialPulseReservation;
       pulseSources.set(pulse, socket);
       socket.pulseCandidates.push(pulse);
@@ -901,6 +945,10 @@ function createPulsiiServer(options = {}) {
         );
       }
       presenceCount = Math.max(0, presenceCount - 1);
+      analytics?.presence(presenceCount);
+      analytics?.add('closed');
+      if (socket.activated) analytics?.add('activeClosed');
+      analytics?.add('durationMs', Math.max(0, now() - socket.connectedAt));
       metrics.connectionsClosed += 1;
       metrics.totalConnectionMs += Math.max(0, now() - socket.connectedAt);
       schedulePresenceBroadcast();
@@ -1022,6 +1070,7 @@ function createPulsiiServer(options = {}) {
       }
 
       await Promise.all([webSocketClosed, httpClosed]);
+      await analytics?.close();
     })();
     return closePromise;
   }
@@ -1031,6 +1080,7 @@ function createPulsiiServer(options = {}) {
     close,
     flushPulseBatch,
     getMetrics: metricsSnapshot,
+    analytics,
     getPresenceCount: () => presenceCount,
     listen,
     server,

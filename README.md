@@ -6,7 +6,9 @@ rejection of the redesigned review on 26 September 2026. See
 
 A black shared canvas, a draggable colour picker, and broad expanding glows.
 Your tap draws immediately; the bounded relay sends it to connected peers.
-No accounts, messages, database, saved canvas or analytics identifiers.
+No public accounts, messages, saved canvas or analytics identifiers.
+An optional authenticated owner dashboard stores anonymous usage aggregates;
+see [private analytics](docs/private-analytics.md).
 
 Use Node 24.14.0, then `npm ci`, `npm test`, `npm run check`, and `npm start`.
 Open `http://localhost:3000`. The WebSocket endpoint is `/live`.
